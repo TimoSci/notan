@@ -34,6 +34,12 @@ public struct LoadedPhoto: Sendable {
     /// Pixel size of the photo as displayed, after its orientation is applied.
     public var originalPixelSize: CGSize
     public var fileBytes: Int
+
+    public init(target: TargetImage, originalPixelSize: CGSize, fileBytes: Int) {
+        self.target = target
+        self.originalPixelSize = originalPixelSize
+        self.fileBytes = fileBytes
+    }
 }
 
 public enum PhotoError: Error, LocalizedError {

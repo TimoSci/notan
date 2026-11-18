@@ -10,6 +10,18 @@ public struct FitProgress: Sendable {
     public var picture: Picture
     /// Non-nil exactly once per stage, when it finishes, and once for level 0.
     public var finishedLevel: Level?
+
+    public init(
+        stage: Int, stageCount: Int, step: Int, stepCount: Int, picture: Picture,
+        finishedLevel: Level?
+    ) {
+        self.stage = stage
+        self.stageCount = stageCount
+        self.step = step
+        self.stepCount = stepCount
+        self.picture = picture
+        self.finishedLevel = finishedLevel
+    }
 }
 
 /// Layer-wise fitting after LIVE: shapes are added in stages, each seeded where the
@@ -41,7 +53,7 @@ public struct Fitter {
         let pointRate = 1.0 * scale
         let colorRate: Float = 0.01
 
-        let rasterizer = Rasterizer(width: width, height: height)
+        let rasterizer = Rasterizer(width: width, height: height, softness: loss.softness)
         // A level's reported error is measured with near-hard edges, like the vectors the
         // user sees, so it does not include the blur of the soft raster used for fitting.
         let sharp = Rasterizer(width: width, height: height, softness: Fitter.measuringSoftness)

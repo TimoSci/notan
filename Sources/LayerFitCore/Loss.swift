@@ -9,11 +9,19 @@ public struct LossConfig: Sendable {
     /// LIVE: it keeps the background and large flat interiors trained when shapes are few.
     public var floorWeight: Float = 0.2
     public var xingWeight: Float = 0.01
+    /// Edge softness of the raster used for fitting, in pixels. Too soft and thin shapes
+    /// render faint, so the optimiser overdrives their colour and they show as bright
+    /// slivers once drawn hard-edged.
+    public var softness: Float = 1.0
 
-    public init(boundaryReach: Float = 10, floorWeight: Float = 0.2, xingWeight: Float = 0.01) {
+    public init(
+        boundaryReach: Float = 10, floorWeight: Float = 0.2, xingWeight: Float = 0.01,
+        softness: Float = 1.0
+    ) {
         self.boundaryReach = boundaryReach
         self.floorWeight = floorWeight
         self.xingWeight = xingWeight
+        self.softness = softness
     }
 }
 
