@@ -1,7 +1,7 @@
 import Foundation
 import LayerFitCore
 
-let usage = "usage: layerfit <image> <outdir> [--mode refit|prefix] [--shapes N] [--size N] [--steps N]\n       tuning: [--softness PX] [--floor W] [--reach PX] [--xing W]"
+let usage = "usage: layerfit <image> <outdir> [--mode refit|prefix] [--shapes N] [--size N] [--steps N]\n       tuning: [--softness PX] [--floor W] [--reach PX] [--xing W] [--seeds error|paper]"
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("layerfit: \(message)\n".utf8))
@@ -11,6 +11,7 @@ func fail(_ message: String) -> Never {
 var positional: [String] = []
 var settings = FitSettings()
 var lossConfig = LossConfig()
+var seedRule = SeedRule.error
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty {
     let argument = arguments.removeFirst()
@@ -32,6 +33,11 @@ while !arguments.isEmpty {
             fail("--mode must be refit or prefix, not “\(value)”")
         }
         settings.mode = mode
+    case "--seeds":
+        guard let rule = SeedRule(rawValue: value) else {
+            fail("--seeds must be error or paper, not “\(value)”")
+        }
+        seedRule = rule
     case "--shapes": settings.totalShapes = positiveInt(max: 4096)
     case "--size": settings.workingSize = positiveInt(max: 2048)
     case "--steps": settings.stepsPerStage = positiveInt(max: 100_000)
@@ -78,7 +84,7 @@ print(pad("level", 7) + pad("shapes", 8) + pad("bytes", 8) + pad("mse", 10) + "s
 let started = Date()
 var written = 0
 let pngSize = CGSize(width: target.width * 4, height: target.height * 4)
-let levels = Fitter(target: target, settings: settings, loss: lossConfig).run(
+let levels = Fitter(target: target, settings: settings, loss: lossConfig, seedRule: seedRule).run(
     progress: { progress in
         guard let level = progress.finishedLevel else { return }
         let name = String(format: "level-%02d", written)

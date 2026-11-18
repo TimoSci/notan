@@ -33,6 +33,7 @@ public struct Fitter {
     public let target: TargetImage
     public let settings: FitSettings
     public let loss: LossConfig
+    public let seedRule: SeedRule
 
     /// How often, in optimisation steps, an unfinished stage reports its current picture.
     public static let progressInterval = 10
@@ -43,10 +44,14 @@ public struct Fitter {
     /// Shapes rendered together while fitting.
     public static let fittingChunk = 8
 
-    public init(target: TargetImage, settings: FitSettings, loss: LossConfig = .init()) {
+    public init(
+        target: TargetImage, settings: FitSettings, loss: LossConfig = .init(),
+        seedRule: SeedRule = .error
+    ) {
         self.target = target
         self.settings = settings
         self.loss = loss
+        self.seedRule = seedRule
     }
 
     /// Blocking. Returns the levels finished so far, level 0 first, when done or cancelled.
@@ -100,7 +105,8 @@ public struct Fitter {
             let stage = stageIndex + 1
 
             let current = render(picture, with: sharp).asArray(Float.self)
-            let seeds = findSeeds(target: target, current: current, count: addCount)
+            let seeds = findSeeds(
+                target: target, current: current, count: addCount, rule: seedRule)
             let frozenCount = settings.mode == .prefix ? picture.shapes.count : 0
             picture.shapes += seeds.map {
                 Shape.circle(center: $0.center, radius: $0.radius, color: $0.color)

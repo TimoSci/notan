@@ -53,6 +53,30 @@ final class SeedsTests: XCTestCase {
         XCTAssertEqual(seeds[0].color, .white)
     }
 
+    func testPaperRulePicksLargestRegionWithSmallCircle() {
+        // LIVE as published: the largest region wins whatever its error, and the seed is small.
+        let target = makeTarget(width: 256, height: 256) { x, y in
+            inDisc(x, y, 128, 128, 60) ? .white : .black
+        }
+        let current = flatPixels(width: 256, height: 256, color: RGB(r: 0.2, g: 0.2, b: 0.2))
+        let seeds = findSeeds(target: target, current: current, count: 1, rule: .paper)
+        XCTAssertFalse(inDisc(seeds[0].center.x, seeds[0].center.y, 128, 128, 60))
+        XCTAssertEqual(seeds[0].color, .black)
+        XCTAssertEqual(seeds[0].radius, 5)
+        // The default rule goes for the disc and fills it.
+        let ours = findSeeds(target: target, current: current, count: 1)
+        XCTAssertTrue(inDisc(ours[0].center.x, ours[0].center.y, 128, 128, 60))
+        XCTAssertGreaterThan(ours[0].radius, 40)
+    }
+
+    func testPaperRuleRadiusScalesWithPictureAndStaysAtLeastTwo() {
+        let target = twoSquares()  // 64 px: 5 * 64 / 256 is below the minimum
+        let seeds = findSeeds(
+            target: target, current: flatPixels(width: 64, height: 64, color: .grey), count: 1,
+            rule: .paper)
+        XCTAssertEqual(seeds[0].radius, 2)
+    }
+
     func testRadiusIsInscribed() {
         let seeds = findSeeds(
             target: twoSquares(), current: flatPixels(width: 64, height: 64, color: .grey), count: 1)

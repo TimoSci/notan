@@ -7,13 +7,22 @@ public struct Seed: Equatable, Sendable {
     public var color: RGB
 }
 
+public enum SeedRule: String, Sendable, CaseIterable {
+    /// Seed the region holding the most squared error, with the largest circle that fits
+    /// inside it. LayerFit's default.
+    case error
+    /// LIVE as published: seed the largest region by area, with a small circle
+    /// (5 px on a 256 px picture).
+    case paper
+}
+
 /// LIVE's component-wise initialisation. Finds the connected regions holding most error where the
 /// current picture is badly wrong and the target is roughly one colour, and seeds one
 /// shape per region at the point deepest inside it.
 /// `current` has the same layout as `target.pixels`.
 public func findSeeds(
     target: TargetImage, current: [Float], count: Int, errorThreshold: Float = 0.1,
-    colorLevels: Int = 4
+    colorLevels: Int = 4, rule: SeedRule = .error
 ) -> [Seed] {
     precondition(current.count == target.pixels.count)
     guard count > 0 else { return [] }
@@ -69,8 +78,15 @@ public func findSeeds(
     func errorMass(_ members: [Int]) -> Float {
         members.reduce(0) { $0 + error[$1] * error[$1] }
     }
-    let ranked = components.map { (members: $0, mass: errorMass($0)) }.sorted { $0.mass > $1.mass }
-    components = ranked.map { $0.members }
+    switch rule {
+    case .error:
+        let ranked = components.map { (members: $0, mass: errorMass($0)) }
+            .sorted { $0.mass > $1.mass }
+        components = ranked.map { $0.members }
+    case .paper:
+        components.sort { $0.count > $1.count }
+    }
+    let paperRadius = max(5 * Float(max(width, height)) / 256, 2)
 
     var seeds: [Seed] = []
     for members in components.prefix(count) {
@@ -78,7 +94,7 @@ public func findSeeds(
         seeds.append(
             Seed(
                 center: SIMD2(Float(index % width) + 0.5, Float(index / width) + 0.5),
-                radius: max(depth, 2),
+                radius: rule == .paper ? paperRadius : max(depth, 2),
                 color: target.color(x: index % width, y: index / width)))
     }
 
