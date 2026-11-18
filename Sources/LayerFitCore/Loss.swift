@@ -7,16 +7,16 @@ public struct LossConfig: Sendable {
     public var boundaryReach: Float = 10
     /// Weight of the plain, unweighted error over all pixels. A deliberate departure from
     /// LIVE: it keeps the background and large flat interiors trained when shapes are few.
-    public var floorWeight: Float = 0.2
+    public var floorWeight: Float = 1.0
     public var xingWeight: Float = 0.01
     /// Edge softness of the raster used for fitting, in pixels. Too soft and thin shapes
     /// render faint, so the optimiser overdrives their colour and they show as bright
     /// slivers once drawn hard-edged.
-    public var softness: Float = 1.0
+    public var softness: Float = 0.5
 
     public init(
-        boundaryReach: Float = 10, floorWeight: Float = 0.2, xingWeight: Float = 0.01,
-        softness: Float = 1.0
+        boundaryReach: Float = 10, floorWeight: Float = 1.0, xingWeight: Float = 0.01,
+        softness: Float = 0.5
     ) {
         self.boundaryReach = boundaryReach
         self.floorWeight = floorWeight
