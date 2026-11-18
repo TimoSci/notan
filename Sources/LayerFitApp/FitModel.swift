@@ -65,6 +65,10 @@ public final class FitModel {
     private var generation = 0
     private var cancelFlag: CancelFlag?
 
+    /// Fits run one at a time: a new fit starts only once the one it replaced has noticed
+    /// its cancellation and stopped, so MLX is never driven by two fits at once.
+    private static let fitQueue = DispatchQueue(label: "LayerFit.fit", qos: .userInitiated)
+
     private let runFit: FitRunner
     private let loadPhotoFile: PhotoLoader
 
@@ -181,7 +185,7 @@ public final class FitModel {
         // The fit reports from its own thread; the stream hands its reports to the main
         // actor one at a time, in order.
         let (stream, continuation) = AsyncStream.makeStream(of: FitProgress.self)
-        Task.detached(priority: .userInitiated) {
+        FitModel.fitQueue.async {
             _ = runFit(target, runSettings, { continuation.yield($0) }, { flag.isCancelled })
             continuation.finish()
         }

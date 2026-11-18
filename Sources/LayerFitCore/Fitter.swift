@@ -24,6 +24,9 @@ public struct FitProgress: Sendable {
     }
 }
 
+/// The most memory MLX has held for arrays in use at once in this process, in bytes.
+public func peakFitMemoryBytes() -> Int { Memory.peakMemory }
+
 /// Layer-wise fitting after LIVE: shapes are added in stages, each seeded where the
 /// picture is most wrong, then refined by gradient descent through the soft rasteriser.
 public struct Fitter {
@@ -35,6 +38,10 @@ public struct Fitter {
     public static let progressInterval = 10
     /// Edge softness, in pixels, used when measuring a level's error and placing seeds.
     public static let measuringSoftness: Float = 0.25
+    /// How many bytes of freed buffers MLX may keep for reuse while fitting.
+    public static let bufferCacheLimit = 16 << 30
+    /// Shapes rendered together while fitting.
+    public static let fittingChunk = 8
 
     public init(target: TargetImage, settings: FitSettings, loss: LossConfig = .init()) {
         self.target = target
@@ -46,6 +53,9 @@ public struct Fitter {
     public func run(progress: (FitProgress) -> Void, isCancelled: () -> Bool) -> [Level] {
         let width = target.width
         let height = target.height
+        // Crop rectangles change every step, so freed buffers rarely fit the next request.
+        // Without a limit MLX keeps them all and the process footprint grows without bound.
+        Memory.cacheLimit = Fitter.bufferCacheLimit
         // LIVE's rates and reach are for ~256 px pictures; scale them with ours.
         let scale = Float(max(width, height)) / 256
         var lossConfig = loss
@@ -53,7 +63,11 @@ public struct Fitter {
         let pointRate = 1.0 * scale
         let colorRate: Float = 0.01
 
-        let rasterizer = Rasterizer(width: width, height: height, softness: loss.softness)
+        // Small chunks keep each chunk's crop rectangle tight around its shapes.
+        let rasterizer = Rasterizer(
+            width: width, height: height, softness: loss.softness, chunk: Fitter.fittingChunk)
+        // Beyond this distance a shape's soft edge and its boundary weight are both nil.
+        let cropMargin = max(16 * loss.softness, lossConfig.boundaryReach) + 1
         // A level's reported error is measured with near-hard edges, like the vectors the
         // user sees, so it does not include the blur of the soft raster used for fitting.
         let sharp = Rasterizer(width: width, height: height, softness: Fitter.measuringSoftness)
@@ -109,15 +123,37 @@ public struct Fitter {
             }
             var adam = Adam(learningRates: rates)
 
+            // Frozen shapes never change during the stage: paint them once, outside the
+            // gradient, and fit the new shapes on top.
+            var base: (image: MLXArray, boundaryDistance: MLXArray)?
+            if frozenCount > 0 {
+                let rendered = rasterizer.render(
+                    points: frozenPoints, colors: frozenColors, background: fixedBackground,
+                    crops: frozen.map {
+                        cropRect(points: $0.points, margin: cropMargin, width: width, height: height)
+                    })
+                eval(rendered.image, rendered.boundaryDistance)
+                base = rendered
+            }
+            // Each movable shape is only evaluated near where it currently is.
+            var crops: [PixelRect] = []
+            func updateCrops() {
+                let flat = parameters[0].asArray(Float.self)
+                crops = (0..<movable.count).map { index in
+                    let start = index * Shape.pointCount * 2
+                    let points = (0..<Shape.pointCount).map {
+                        SIMD2(flat[start + $0 * 2], flat[start + $0 * 2 + 1])
+                    }
+                    return cropRect(points: points, margin: cropMargin, width: width, height: height)
+                }
+            }
+
             let lossAndGradient = valueAndGrad(
                 { (arrays: [MLXArray]) -> [MLXArray] in
-                    let points =
-                        frozenCount > 0 ? concatenated([frozenPoints, arrays[0]], axis: 0) : arrays[0]
-                    let colors =
-                        frozenCount > 0 ? concatenated([frozenColors, arrays[1]], axis: 0) : arrays[1]
                     let background = fitsBackground ? arrays[2] : fixedBackground
                     let (image, boundary) = rasterizer.render(
-                        points: points, colors: colors, background: background)
+                        points: arrays[0], colors: arrays[1], background: background,
+                        crops: crops, over: base)
                     return [
                         fitLoss(
                             image: image, target: targetArray, boundaryDistance: boundary,
@@ -147,6 +183,7 @@ public struct Fitter {
 
             for step in 1...max(settings.stepsPerStage, 1) {
                 if isCancelled() { return levels }
+                updateCrops()
                 let (_, gradients) = lossAndGradient(parameters)
                 parameters = adam.step(parameters: parameters, gradients: gradients)
                 for index in 1..<parameters.count {

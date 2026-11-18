@@ -4,3 +4,4 @@ DerivedData/
 out/
 .superpowers/
 .DS_Store
+*.profraw

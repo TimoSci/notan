@@ -217,6 +217,56 @@ final class FitModelTests: XCTestCase {
         XCTAssertEqual(model.photoURL?.lastPathComponent, "other.jpg")
     }
 
+    func testFitsNeverRunAtTheSameTime() async {
+        // MLX must not be driven by two fits at once: a new fit waits for the old one to stop.
+        let lock = NSLock()
+        var active = 0
+        var mostAtOnce = 0
+        var starts = 0
+        let model = makeModel { target, settings, progress, isCancelled in
+            lock.lock()
+            active += 1
+            mostAtOnce = max(mostAtOnce, active)
+            starts += 1
+            let first = starts == 1
+            lock.unlock()
+            defer {
+                lock.lock()
+                active -= 1
+                lock.unlock()
+            }
+            if first {
+                // Slow to notice it was cancelled.
+                while !isCancelled() { Thread.sleep(forTimeInterval: 0.002) }
+                Thread.sleep(forTimeInterval: 0.1)
+                return []
+            }
+            return Self.instantRunner(stages: 2)(target, settings, progress, isCancelled)
+        }
+        model.open(photoURL)
+        model.start()
+        await waitFor("first fit running") { lock.withLock { starts } == 1 }
+        model.start()
+        await waitFor("done") { model.status == .done }
+        XCTAssertEqual(lock.withLock { mostAtOnce }, 1)
+        XCTAssertEqual(model.levels.count, 3)
+    }
+
+    // MARK: Launch arguments
+
+    func testInitialPhotoIsFirstArgumentThatIsAFile() throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("layerfit-arg-\(UUID().uuidString).png")
+        try Data([1, 2, 3]).write(to: file)
+        XCTAssertEqual(
+            initialPhotoURL(arguments: ["/path/LayerFit", file.path])?.path, file.path)
+        // Xcode launches apps with debug flags and their values; neither is a photo.
+        XCTAssertNil(initialPhotoURL(arguments: ["/path/LayerFit", "-NSDocumentRevisionsDebugMode", "YES"]))
+        XCTAssertNil(initialPhotoURL(arguments: ["/path/LayerFit", "/no/such/photo.jpg"]))
+        XCTAssertNil(initialPhotoURL(arguments: ["/path/LayerFit", FileManager.default.temporaryDirectory.path]))
+        XCTAssertNil(initialPhotoURL(arguments: ["/path/LayerFit"]))
+    }
+
     // MARK: Modes
 
     func testFittingOneModeKeepsTheOther() async {

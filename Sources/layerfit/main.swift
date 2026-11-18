@@ -98,4 +98,7 @@ let levels = Fitter(target: target, settings: settings, loss: lossConfig).run(
         written += 1
     },
     isCancelled: { false })
-print(String(format: "total %.1f s, %d levels", Date().timeIntervalSince(started), levels.count))
+print(
+    String(
+        format: "total %.1f s, %d levels, peak memory in use %.1f GB",
+        Date().timeIntervalSince(started), levels.count, Double(peakFitMemoryBytes()) / 1e9))

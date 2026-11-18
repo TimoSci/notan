@@ -87,8 +87,9 @@ public struct ContentView: View {
                     "Re-fit: every level is re-optimised as a whole. Prefix: each level is exactly the first shapes of the next."
                 )
                 Spacer()
-                Button("Start") { model.start() }
-                    .keyboardShortcut(.defaultAction)
+                // Return starts a fit, but must not restart one that is already running.
+                Button(model.isFitting ? "Restart" : "Start") { model.start() }
+                    .keyboardShortcut(model.isFitting ? nil : .defaultAction)
                     .disabled(model.photoURL == nil)
             }
         }

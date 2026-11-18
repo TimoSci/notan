@@ -19,6 +19,46 @@ public func colorArray(_ color: RGB) -> MLXArray {
     MLXArray([color.r, color.g, color.b])
 }
 
+/// A half-open rectangle of pixels: columns x0..<x1, rows y0..<y1.
+public struct PixelRect: Equatable, Sendable {
+    public var x0, y0, x1, y1: Int
+
+    public init(x0: Int, y0: Int, x1: Int, y1: Int) {
+        self.x0 = x0
+        self.y0 = y0
+        self.x1 = x1
+        self.y1 = y1
+    }
+
+    public var isEmpty: Bool { x1 <= x0 || y1 <= y0 }
+
+    public func union(_ other: PixelRect) -> PixelRect {
+        if isEmpty { return other }
+        if other.isEmpty { return self }
+        return PixelRect(
+            x0: min(x0, other.x0), y0: min(y0, other.y0), x1: max(x1, other.x1),
+            y1: max(y1, other.y1))
+    }
+}
+
+/// The pixels a shape can affect: the box around its control points (which always contains
+/// the curve) grown by `margin`, clamped to the image. Empty if that misses the image.
+public func cropRect(points: [SIMD2<Float>], margin: Float, width: Int, height: Int) -> PixelRect {
+    var low = SIMD2<Float>(Float.infinity, Float.infinity)
+    var high = SIMD2<Float>(-Float.infinity, -Float.infinity)
+    for point in points where point.x.isFinite && point.y.isFinite {
+        low = pointwiseMin(low, point)
+        high = pointwiseMax(high, point)
+    }
+    guard low.x <= high.x else { return PixelRect(x0: 0, y0: 0, x1: 0, y1: 0) }
+    func clamp(_ value: Float, _ limit: Int) -> Int { Int(min(max(value, 0), Float(limit))) }
+    return PixelRect(
+        x0: clamp((low.x - margin).rounded(.down), width),
+        y0: clamp((low.y - margin).rounded(.down), height),
+        x1: clamp((high.x + margin).rounded(.up), width),
+        y1: clamp((high.y + margin).rounded(.up), height))
+}
+
 /// A soft rasteriser built only from MLX array operations, so MLX can differentiate
 /// the image with respect to control points and colours. Used for fitting only; results
 /// shown to the user are drawn from the vectors.
@@ -66,30 +106,54 @@ public struct Rasterizer {
     /// points [P, 12, 2], colors [P, 3], background [3]. P may be 0.
     /// Returns image [H, W, 3] and boundaryDistance [H, W]: the distance to the nearest edge
     /// of any shape, with its gradient stopped, or `noBoundary` everywhere when P == 0.
-    public func render(points: MLXArray, colors: MLXArray, background: MLXArray)
-        -> (image: MLXArray, boundaryDistance: MLXArray)
-    {
+    ///
+    /// `crops`, one per shape, limits the work for each shape to the pixels it can affect;
+    /// outside its rectangle a shape counts as absent and its edge as far away. This is
+    /// what keeps time and memory in check when there are many small shapes.
+    /// `base` is an already rendered picture to paint on top of, in place of the background.
+    public func render(
+        points: MLXArray, colors: MLXArray, background: MLXArray, crops: [PixelRect]? = nil,
+        over base: (image: MLXArray, boundaryDistance: MLXArray)? = nil
+    ) -> (image: MLXArray, boundaryDistance: MLXArray) {
         let shapeCount = points.dim(0)
-        var image = MLXArray.zeros([height, width, 3]) + background.reshaped(1, 1, 3)
-        var boundary = MLXArray.zeros([height, width]) + Rasterizer.noBoundary
+        precondition(crops == nil || crops!.count == shapeCount)
+        var image = base?.image ?? MLXArray.zeros([height, width, 3]) + background.reshaped(1, 1, 3)
+        var boundary =
+            base?.boundaryDistance ?? MLXArray.zeros([height, width]) + Rasterizer.noBoundary
+        let whole = PixelRect(x0: 0, y0: 0, x1: width, y1: height)
 
         var start = 0
         while start < shapeCount {
             let end = min(start + chunk, shapeCount)
-            let (alpha, distance) = coverage(points: points[start..<end])
+            defer { start = end }
+            let rect =
+                crops?[start..<end].reduce(PixelRect(x0: 0, y0: 0, x1: 0, y1: 0)) { $0.union($1) }
+                ?? whole
+            if rect.isEmpty { continue }
+            var (alpha, distance) = coverage(points: points[start..<end], rect: rect)
+            if rect != whole {
+                let widths: [IntOrPair] = [
+                    IntOrPair((rect.y0, height - rect.y1)), IntOrPair((rect.x0, width - rect.x1)),
+                    IntOrPair((0, 0)),
+                ]
+                alpha = padded(alpha, widths: widths)
+                distance = padded(distance, widths: widths, value: MLXArray(Rasterizer.noBoundary))
+            }
             boundary = minimum(boundary, stopGradient(distance.min(axis: -1)))
             for index in 0..<(end - start) {
                 let a = alpha[0..., 0..., index].expandedDimensions(axis: -1)  // [H, W, 1]
                 let color = colors[start + index].reshaped(1, 1, 3)
                 image = image * (1 - a) + color * a
             }
-            start = end
         }
         return (image, boundary)
     }
 
-    /// For C shapes: soft coverage [H, W, C] and unsigned edge distance [H, W, C].
-    private func coverage(points: MLXArray) -> (alpha: MLXArray, distance: MLXArray) {
+    /// For C shapes, over the pixels of `rect` (h × w): soft coverage [h, w, C] and unsigned
+    /// edge distance [h, w, C].
+    private func coverage(points: MLXArray, rect: PixelRect) -> (alpha: MLXArray, distance: MLXArray) {
+        let pixelX = self.pixelX[rect.y0..<rect.y1, rect.x0..<rect.x1]
+        let pixelY = self.pixelY[rect.y0..<rect.y1, rect.x0..<rect.x1]
         let count = points.dim(0)
         let a = matmul(basisStart, points)  // [C, E, 2]
         let b = matmul(basisEnd, points)

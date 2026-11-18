@@ -113,6 +113,74 @@ final class RasterizerTests: XCTestCase {
         XCTAssertLessThan(distanceDiff, 1e-4)
     }
 
+    func fiveShapes() -> [LayerFitCore.Shape] {
+        (0..<5).map { i in
+            Shape.circle(
+                center: SIMD2(12 + Float(i) * 9, 20 + Float(i) * 5), radius: 6,
+                color: RGB(r: Float(i) / 5, g: 0.5, b: 1 - Float(i) / 5))
+        }
+    }
+
+    func testCropRectCoversShapePlusMargin() {
+        let circle = Shape.circle(center: SIMD2(30, 20), radius: 5, color: white)
+        XCTAssertEqual(
+            cropRect(points: circle.points, margin: 3, width: 64, height: 64),
+            PixelRect(x0: 22, y0: 12, x1: 38, y1: 28))
+        // Clamped to the image; a shape wholly outside gives an empty rectangle.
+        XCTAssertEqual(
+            cropRect(points: circle.points, margin: 100, width: 64, height: 48),
+            PixelRect(x0: 0, y0: 0, x1: 64, y1: 48))
+        let outside = Shape.circle(center: SIMD2(-50, -50), radius: 5, color: white)
+        XCTAssertTrue(cropRect(points: outside.points, margin: 3, width: 64, height: 64).isEmpty)
+    }
+
+    func testCroppedRenderMatchesFull() {
+        let shapes = fiveShapes()
+        let rasterizer = Rasterizer(width: 64, height: 64, softness: 0.5, chunk: 2)
+        let points = pointsArray(shapes)
+        let colors = colorsArray(shapes)
+        let background = colorArray(black)
+        let crops = shapes.map { cropRect(points: $0.points, margin: 12, width: 64, height: 64) }
+        let full = rasterizer.render(points: points, colors: colors, background: background)
+        let cropped = rasterizer.render(
+            points: points, colors: colors, background: background, crops: crops)
+        XCTAssertLessThan(abs(full.image - cropped.image).max().item(Float.self), 1e-4)
+        // Distances agree wherever they are within the margin; beyond it they only need to be far.
+        let near = full.boundaryDistance .< 10
+        let gap = which(near, abs(full.boundaryDistance - cropped.boundaryDistance), MLXArray(Float(0)))
+        XCTAssertLessThan(gap.max().item(Float.self), 1e-3)
+        let far = which(near, MLXArray(Float(100)), cropped.boundaryDistance)
+        XCTAssertGreaterThanOrEqual(far.min().item(Float.self), 10)
+    }
+
+    func testOffscreenShapeWithCropsIsSkipped() {
+        let outside = Shape.circle(center: SIMD2(-50, -50), radius: 5, color: white)
+        let rasterizer = Rasterizer(width: 32, height: 32)
+        let result = rasterizer.render(
+            points: pointsArray([outside]), colors: colorsArray([outside]),
+            background: colorArray(black),
+            crops: [cropRect(points: outside.points, margin: 3, width: 32, height: 32)])
+        XCTAssertEqual(result.image.max().item(Float.self), 0)
+    }
+
+    func testRenderOverBaseMatchesSingleRender() {
+        let shapes = fiveShapes()
+        let rasterizer = Rasterizer(width: 64, height: 64, softness: 0.5)
+        let background = colorArray(RGB(r: 0.1, g: 0.2, b: 0.3))
+        let all = rasterizer.render(
+            points: pointsArray(shapes), colors: colorsArray(shapes), background: background)
+        let lower = Array(shapes.prefix(3))
+        let upper = Array(shapes.suffix(2))
+        let base = rasterizer.render(
+            points: pointsArray(lower), colors: colorsArray(lower), background: background)
+        let layered = rasterizer.render(
+            points: pointsArray(upper), colors: colorsArray(upper), background: background,
+            over: base)
+        XCTAssertLessThan(abs(all.image - layered.image).max().item(Float.self), 1e-5)
+        XCTAssertLessThan(
+            abs(all.boundaryDistance - layered.boundaryDistance).max().item(Float.self), 1e-4)
+    }
+
     func testNonSquareImageShape() {
         let rasterizer = Rasterizer(width: 40, height: 20)
         let circle = Shape.circle(center: SIMD2(30, 10), radius: 5, color: white)
