@@ -97,6 +97,23 @@ final class FitModelTests: XCTestCase {
         XCTAssertEqual(model.status, .idle)
     }
 
+    func testStartKeepsStepsWithinRange() async {
+        var seen: [Int] = []
+        let model = makeModel { target, settings, progress, isCancelled in
+            seen.append(settings.stepsPerStage)
+            return Self.instantRunner(stages: 1)(target, settings, progress, isCancelled)
+        }
+        model.open(photoURL)
+        model.settings.stepsPerStage = 3
+        model.start()
+        await waitFor("done") { model.status == .done }
+        model.settings.stepsPerStage = 50_000
+        model.start()
+        await waitFor("second run") { seen.count == 2 && model.status == .done }
+        XCTAssertEqual(seen, [10, 1000])
+        XCTAssertEqual(model.settings.stepsPerStage, 1000)
+    }
+
     // MARK: Fitting
 
     func testStartPublishesLevelsAsStagesFinish() async {

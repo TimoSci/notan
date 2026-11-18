@@ -92,6 +92,23 @@ final class TargetImageTests: XCTestCase {
         }
     }
 
+    func testPreviewIsUprightAndBounded() throws {
+        let image = Fixtures.image(width: 200, height: 100) { context in
+            context.setFillColor(red: 0, green: 0, blue: 1, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: 200, height: 100))
+        }
+        let url = Fixtures.write(image, name: "preview.jpg", type: .jpeg, orientation: 6)
+        let preview = try XCTUnwrap(loadPreview(url: url, maxPixelSize: 80))
+        XCTAssertEqual(preview.width, 40)
+        XCTAssertEqual(preview.height, 80)
+    }
+
+    func testPreviewOfUnreadableFileIsNil() throws {
+        let url = Fixtures.directory.appendingPathComponent("junk.png")
+        try Data("nope".utf8).write(to: url)
+        XCTAssertNil(loadPreview(url: url, maxPixelSize: 80))
+    }
+
     func testMissingFileThrows() {
         let url = Fixtures.directory.appendingPathComponent("nope.png")
         XCTAssertThrowsError(try loadPhoto(url: url, workingSize: 256))

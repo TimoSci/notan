@@ -44,6 +44,10 @@ public final class FitModel {
         case cancelled
     }
 
+    public static let shapeChoices = [32, 64, 128, 256]
+    public static let sizeChoices = [128, 256, 384, 512]
+    public static let stepsRange = 10...1000
+
     public var settings = FitSettings()
     public private(set) var photoURL: URL?
     public private(set) var photo: LoadedPhoto?
@@ -146,6 +150,7 @@ public final class FitModel {
     /// Fits the loaded photo in the mode currently selected, replacing that mode's result.
     public func start() {
         guard let url = photoURL else { return }
+        settings.stepsPerStage = min(max(settings.stepsPerStage, FitModel.stepsRange.lowerBound), FitModel.stepsRange.upperBound)
         let loaded: LoadedPhoto
         do {
             // Reload: the working size may have changed since the photo was opened.
