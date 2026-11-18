@@ -1,0 +1,25 @@
+name: LayerFit
+options:
+  deploymentTarget:
+    macOS: "15.0"
+packages:
+  LayerFit:
+    path: ..
+targets:
+  LayerFit:
+    type: application
+    platform: macOS
+    sources: [Main]
+    dependencies:
+      - package: LayerFit
+        product: LayerFitUI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.timosci.LayerFit
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_HARDENED_RUNTIME: NO
+        INFOPLIST_KEY_NSHighResolutionCapable: YES
