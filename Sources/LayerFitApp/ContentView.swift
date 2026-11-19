@@ -65,6 +65,15 @@ public struct ContentView: View {
                     ForEach(FitModel.sizeChoices, id: \.self) { Text("\($0) px").tag($0) }
                 }
                 .fixedSize()
+                Picker("Min width", selection: $model.settings.minWidth) {
+                    ForEach(FitModel.minWidthChoices, id: \.self) { width in
+                        Text(width == 0 ? "Off" : "\(Int(width)) px").tag(width)
+                    }
+                }
+                .fixedSize()
+                .help(
+                    "Keeps shapes from thinning into slivers and spikes. The value is the narrowest allowed at the last level; earlier shapes must be wider."
+                )
                 LabeledContent("Steps") {
                     TextField("Steps", value: $model.settings.stepsPerStage, format: .number)
                         .labelsHidden()

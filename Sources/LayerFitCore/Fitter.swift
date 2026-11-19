@@ -79,6 +79,12 @@ public struct Fitter {
         let targetArray = MLXArray(target.pixels, [height, width, 3])
         let schedule = stageSchedule(totalShapes: settings.totalShapes)
 
+        // Each shape keeps the minimum width of the stage it was added in.
+        let stageMinWidths = minWidthSchedule(
+            minWidth: settings.minWidth * scale, schedule: schedule,
+            longSide: Float(max(width, height)))
+        var shapeMinWidths: [Float] = []
+
         var picture = Picture(width: width, height: height, background: target.meanColor, shapes: [])
         var levels: [Level] = []
 
@@ -105,8 +111,12 @@ public struct Fitter {
             let stage = stageIndex + 1
 
             let current = render(picture, with: sharp).asArray(Float.self)
+            let stageMinWidth = stageMinWidths[stageIndex]
+            // A seed starts at least as wide as it must stay.
             let seeds = findSeeds(
-                target: target, current: current, count: addCount, rule: seedRule)
+                target: target, current: current, count: addCount, rule: seedRule,
+                minRadius: max(2, stageMinWidth))
+            shapeMinWidths += Array(repeating: stageMinWidth, count: addCount)
             let frozenCount = settings.mode == .prefix ? picture.shapes.count : 0
             picture.shapes += seeds.map {
                 Shape.circle(center: $0.center, radius: $0.radius, color: $0.color)
@@ -120,6 +130,8 @@ public struct Fitter {
             let frozenColors = colorsArray(frozen)
             let fixedBackground = colorArray(picture.background)
             let fitsBackground = settings.mode == .refit
+            let minWidths: MLXArray? =
+                settings.minWidth > 0 ? MLXArray(Array(shapeMinWidths.dropFirst(frozenCount))) : nil
 
             var parameters = [pointsArray(movable), colorsArray(movable)]
             var rates = [pointRate, colorRate]
@@ -163,7 +175,7 @@ public struct Fitter {
                     return [
                         fitLoss(
                             image: image, target: targetArray, boundaryDistance: boundary,
-                            points: arrays[0], config: lossConfig)
+                            points: arrays[0], config: lossConfig, minWidths: minWidths)
                     ]
                 }, argumentNumbers: Array(parameters.indices))
 

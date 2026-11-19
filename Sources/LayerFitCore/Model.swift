@@ -77,15 +77,20 @@ public struct FitSettings: Sendable {
     public var workingSize = 256
     public var stepsPerStage = 150
     public var mode = LevelMode.refit
+    /// The narrowest a shape may be at the finest level, in pixels at a 256 px working size
+    /// (it scales with the working size). Earlier shapes must be wider; see
+    /// `minWidthSchedule`. 0 switches the check off.
+    public var minWidth: Float = 0
 
     public init(
         totalShapes: Int = 128, workingSize: Int = 256, stepsPerStage: Int = 150,
-        mode: LevelMode = .refit
+        mode: LevelMode = .refit, minWidth: Float = 0
     ) {
         self.totalShapes = totalShapes
         self.workingSize = workingSize
         self.stepsPerStage = stepsPerStage
         self.mode = mode
+        self.minWidth = minWidth
     }
 }
 

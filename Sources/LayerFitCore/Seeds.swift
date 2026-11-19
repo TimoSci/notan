@@ -22,7 +22,7 @@ public enum SeedRule: String, Sendable, CaseIterable {
 /// `current` has the same layout as `target.pixels`.
 public func findSeeds(
     target: TargetImage, current: [Float], count: Int, errorThreshold: Float = 0.1,
-    colorLevels: Int = 4, rule: SeedRule = .error
+    colorLevels: Int = 4, rule: SeedRule = .error, minRadius: Float = 2
 ) -> [Seed] {
     precondition(current.count == target.pixels.count)
     guard count > 0 else { return [] }
@@ -86,7 +86,7 @@ public func findSeeds(
     case .paper:
         components.sort { $0.count > $1.count }
     }
-    let paperRadius = max(5 * Float(max(width, height)) / 256, 2)
+    let paperRadius = max(5 * Float(max(width, height)) / 256, minRadius)
 
     var seeds: [Seed] = []
     for members in components.prefix(count) {
@@ -94,7 +94,7 @@ public func findSeeds(
         seeds.append(
             Seed(
                 center: SIMD2(Float(index % width) + 0.5, Float(index / width) + 0.5),
-                radius: rule == .paper ? paperRadius : max(depth, 2),
+                radius: rule == .paper ? paperRadius : max(depth, minRadius),
                 color: target.color(x: index % width, y: index / width)))
     }
 
@@ -110,7 +110,9 @@ public func findSeeds(
                 }
                 if clear || spacing == 0 {
                     seeds.append(
-                        Seed(center: p, radius: 2, color: target.color(x: i % width, y: i / width)))
+                        Seed(
+                            center: p, radius: minRadius,
+                            color: target.color(x: i % width, y: i / width)))
                 }
             }
         }
@@ -120,7 +122,7 @@ public func findSeeds(
             let i = order[next % order.count]
             seeds.append(
                 Seed(
-                    center: SIMD2(Float(i % width) + 0.5, Float(i / width) + 0.5), radius: 2,
+                    center: SIMD2(Float(i % width) + 0.5, Float(i / width) + 0.5), radius: minRadius,
                     color: target.color(x: i % width, y: i / width)))
             next += 1
         }

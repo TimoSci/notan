@@ -13,6 +13,10 @@ public struct LossConfig: Sendable {
     /// render faint, so the optimiser overdrives their colour and they show as bright
     /// slivers once drawn hard-edged.
     public var softness: Float = 0.5
+    /// Weight of the penalty on shapes narrower than their minimum width.
+    public var widthWeight: Float = 0.1
+    /// Weight of the penalty on sharp corners, applied only with a minimum width.
+    public var cornerWeight: Float = 0.05
 
     public init(
         boundaryReach: Float = 10, floorWeight: Float = 1.0, xingWeight: Float = 0.01,
@@ -35,7 +39,8 @@ private func selector(offset: Int) -> MLXArray {
     let segments = Shape.pointCount / 3
     var rows = [Float](repeating: 0, count: segments * Shape.pointCount)
     for segment in 0..<segments {
-        rows[segment * Shape.pointCount + (3 * segment + offset) % Shape.pointCount] = 1
+        let index = (3 * segment + offset + Shape.pointCount) % Shape.pointCount
+        rows[segment * Shape.pointCount + index] = 1
     }
     return MLXArray(rows, [segments, Shape.pointCount])
 }
@@ -67,14 +72,22 @@ public func xingLoss(points: MLXArray) -> MLXArray {
 
 /// image, target [H, W, 3]; boundaryDistance [H, W]; points [P, 12, 2] of the shapes that
 /// can move. Boundary-weighted error (LIVE's UDF loss) plus a plain error floor plus Xing.
+/// With `minWidths` [P], also penalises shapes narrower than their minimum and sharp corners.
 public func fitLoss(
     image: MLXArray, target: MLXArray, boundaryDistance: MLXArray, points: MLXArray,
-    config: LossConfig
+    config: LossConfig, minWidths: MLXArray? = nil
 ) -> MLXArray {
     let diff = image - target
     let squared = (diff * diff).sum(axis: -1)  // [H, W]
     let weight = stopGradient(maximum(1 - boundaryDistance / config.boundaryReach, 0))
     let weighted = (weight * squared).sum() / (weight.sum() + 1e-6)
-    return weighted + config.floorWeight * squared.mean()
+    var loss =
+        weighted + config.floorWeight * squared.mean()
         + config.xingWeight * xingLoss(points: points)
+    if let minWidths {
+        loss =
+            loss + config.widthWeight * widthPenalty(points: points, minWidths: minWidths)
+            + config.cornerWeight * cornerPenalty(points: points)
+    }
+    return loss
 }

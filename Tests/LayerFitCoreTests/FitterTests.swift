@@ -83,6 +83,41 @@ final class FitterTests: XCTestCase {
         XCTAssertTrue(anyMoved)
     }
 
+    /// Three thin bright lines: without a width floor, shapes hug them.
+    func stripes() -> TargetImage {
+        makeTarget(width: 48, height: 48) { _, y in
+            [8, 24, 40].contains { abs(y - Float($0)) < 1 } ? .white : .black
+        }
+    }
+
+    func narrowest(_ levels: [Level]) -> Float {
+        levels.last!.picture.shapes.map { meanWidth(of: $0) }.min()!
+    }
+
+    func testMinWidthKeepsShapesWide() {
+        // minWidth is given at a 256 px scale: 32 means 6 px on this 48 px picture.
+        func run(minWidth: Float) -> [Level] {
+            let settings = FitSettings(
+                totalShapes: 3, workingSize: 48, stepsPerStage: 80, mode: .refit, minWidth: minWidth)
+            return Fitter(target: stripes(), settings: settings)
+                .run(progress: { _ in }, isCancelled: { false })
+        }
+        XCTAssertLessThan(narrowest(run(minWidth: 0)), 3)
+        XCTAssertGreaterThan(narrowest(run(minWidth: 32)), 4.5)
+    }
+
+    func testMinWidthFitIsFinite() {
+        let settings = FitSettings(
+            totalShapes: 4, workingSize: 48, stepsPerStage: 30, mode: .prefix, minWidth: 32)
+        let levels = Fitter(target: twoDiscs(), settings: settings)
+            .run(progress: { _ in }, isCancelled: { false })
+        XCTAssertEqual(levels.count, 5)
+        for shape in levels.last!.picture.shapes {
+            XCTAssertTrue(shape.points.allSatisfy { $0.x.isFinite && $0.y.isFinite })
+        }
+        XCTAssertTrue(levels.allSatisfy { $0.mse.isFinite })
+    }
+
     func testFlatImageFinishesFinite() {
         let target = makeTarget(width: 32, height: 32) { _, _ in .grey }
         let levels = fit(target, shapes: 4, steps: 20)

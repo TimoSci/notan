@@ -47,6 +47,8 @@ public final class FitModel {
     public static let shapeChoices = [32, 64, 128, 256]
     public static let sizeChoices = [128, 256, 384, 512]
     public static let stepsRange = 10...1000
+    /// Minimum shape width at the finest level, in pixels at 256 px; 0 is off.
+    public static let minWidthChoices: [Float] = [0, 2, 4, 6, 8]
 
     public var settings = FitSettings()
     public private(set) var photoURL: URL?

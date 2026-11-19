@@ -1,7 +1,7 @@
 import Foundation
 import LayerFitCore
 
-let usage = "usage: layerfit <image> <outdir> [--mode refit|prefix] [--shapes N] [--size N] [--steps N]\n       tuning: [--softness PX] [--floor W] [--reach PX] [--xing W] [--seeds error|paper]"
+let usage = "usage: layerfit <image> <outdir> [--mode refit|prefix] [--shapes N] [--size N] [--steps N] [--min-width PX]\n       tuning: [--softness PX] [--floor W] [--reach PX] [--xing W] [--seeds error|paper]"
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("layerfit: \(message)\n".utf8))
@@ -38,6 +38,11 @@ while !arguments.isEmpty {
             fail("--seeds must be error or paper, not “\(value)”")
         }
         seedRule = rule
+    case "--min-width":
+        guard let width = Float(value), width >= 0, width.isFinite else {
+            fail("--min-width must be a non-negative number of pixels, not “\(value)”")
+        }
+        settings.minWidth = width
     case "--shapes": settings.totalShapes = positiveInt(max: 4096)
     case "--size": settings.workingSize = positiveInt(max: 2048)
     case "--steps": settings.stepsPerStage = positiveInt(max: 100_000)
@@ -78,7 +83,8 @@ func pad(_ text: String, _ width: Int) -> String {
 
 let target = photo.target
 print("\(imageURL.lastPathComponent): fitting at \(target.width)×\(target.height), "
-    + "\(settings.totalShapes) shapes, \(settings.stepsPerStage) steps per stage, mode \(settings.mode.rawValue)")
+    + "\(settings.totalShapes) shapes, \(settings.stepsPerStage) steps per stage, mode \(settings.mode.rawValue)"
+    + (settings.minWidth > 0 ? ", min width \(settings.minWidth) px" : ""))
 print(pad("level", 7) + pad("shapes", 8) + pad("bytes", 8) + pad("mse", 10) + "seconds")
 
 let started = Date()
