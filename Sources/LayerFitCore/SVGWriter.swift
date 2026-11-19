@@ -32,6 +32,7 @@ private func hex(_ color: RGB) -> String {
 public func svg(_ picture: Picture, outputSize: CGSize, maxDepth: Int = .max) -> String {
     var lines: [String] = []
     var clipCount = 0
+    var gradientCount = 0
 
     func pathData(_ shape: Shape) -> String {
         func point(_ index: Int) -> String {
@@ -48,7 +49,20 @@ public func svg(_ picture: Picture, outputSize: CGSize, maxDepth: Int = .max) ->
     func write(_ shapes: [Shape], depthLeft: Int) {
         for shape in shapes {
             let d = pathData(shape)
-            lines.append("<path d=\"\(d)\" fill=\"\(hex(shape.color))\" fill-rule=\"nonzero\"/>")
+            var fill = hex(shape.color)
+            if let gradient = shape.gradient {
+                gradientCount += 1
+                let id = "g\(gradientCount)"
+                lines.append(
+                    "<linearGradient id=\"\(id)\" gradientUnits=\"userSpaceOnUse\" "
+                        + "x1=\"\(number(gradient.from.x))\" y1=\"\(number(gradient.from.y))\" "
+                        + "x2=\"\(number(gradient.to.x))\" y2=\"\(number(gradient.to.y))\">"
+                        + "<stop offset=\"0\" stop-color=\"\(hex(shape.color))\"/>"
+                        + "<stop offset=\"1\" stop-color=\"\(hex(gradient.endColor))\"/>"
+                        + "</linearGradient>")
+                fill = "url(#\(id))"
+            }
+            lines.append("<path d=\"\(d)\" fill=\"\(fill)\" fill-rule=\"nonzero\"/>")
             guard depthLeft > 0, let children = shape.inner?.shapes, !children.isEmpty else {
                 continue
             }

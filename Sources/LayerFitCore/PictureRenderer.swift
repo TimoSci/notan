@@ -156,9 +156,25 @@ private struct Painter {
 
     private func paint(_ shape: Shape, node: NodeID, in context: CGContext, depthLeft: Int) {
         let path = outline(of: shape)
-        context.setFillColor(color(shape.color, for: node))
-        context.addPath(path)
-        context.fillPath(using: .winding)
+        if case .normal = style, let gradient = shape.gradient,
+            let ramp = CGGradient(
+                colorsSpace: CGColorSpace(name: CGColorSpace.sRGB),
+                colors: [cgColor(shape.color), cgColor(gradient.endColor)] as CFArray,
+                locations: [0, 1])
+        {
+            context.saveGState()
+            context.addPath(path)
+            context.clip(using: .winding)
+            context.drawLinearGradient(
+                ramp, start: CGPoint(x: CGFloat(gradient.from.x), y: CGFloat(gradient.from.y)),
+                end: CGPoint(x: CGFloat(gradient.to.x), y: CGFloat(gradient.to.y)),
+                options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            context.restoreGState()
+        } else {
+            context.setFillColor(color(shape.color, for: node))
+            context.addPath(path)
+            context.fillPath(using: .winding)
+        }
         guard depthLeft > 0, descends(into: node), let children = shape.inner?.shapes,
             !children.isEmpty
         else { return }

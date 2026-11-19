@@ -60,6 +60,7 @@
             snapshot("2-opened")
 
             model.settings.totalShapes = 32
+            model.settings.gradients = environment["LAYERFIT_SMOKE_GRADIENTS"] != nil
             model.start()
             await wait("refit: 4 levels") { model.levels.count >= 4 }
             if let window = NSApp.windows.first(where: { $0.isVisible }) {

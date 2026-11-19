@@ -79,6 +79,11 @@ public struct ContentView: View {
                     .help(
                         "Keeps shapes from crossing over themselves into bow-ties, loops and folded lobes. Dents and bulges are unaffected; shapes curled most of the way round something are discouraged."
                     )
+                Toggle("Gradients", isOn: $model.settings.gradients)
+                    .toggleStyle(.checkbox)
+                    .help(
+                        "Fills each shape with a linear gradient between two colours instead of one flat colour. Smooth areas such as sky come closer to the photo; each shape costs 11 more bytes."
+                    )
                 LabeledContent("Steps") {
                     TextField("Steps", value: $model.settings.stepsPerStage, format: .number)
                         .labelsHidden()

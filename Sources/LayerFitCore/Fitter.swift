@@ -139,7 +139,8 @@ public struct Fitter {
             rasterizer.render(
                 points: pointsArray(picture.shapes), colors: colorsArray(picture.shapes),
                 background: colorArray(picture.background), over: regionBase ?? gapBase,
-                mask: maskArray
+                mask: maskArray,
+                gradients: settings.gradients ? gradientArrays(picture.shapes) : nil
             ).image
         }
         func finish(stage: Int) {
@@ -171,7 +172,15 @@ public struct Fitter {
             shapeMinWidths += Array(repeating: stageMinWidth, count: addCount)
             let frozenCount = settings.mode == .prefix ? picture.shapes.count : 0
             picture.shapes += seeds.map {
-                Shape.circle(center: $0.center, radius: $0.radius, color: $0.color)
+                var shape = Shape.circle(center: $0.center, radius: $0.radius, color: $0.color)
+                if settings.gradients {
+                    // Starts flat, with the axis across the seed; the two colours part as
+                    // the fit finds a slope.
+                    let reach = SIMD2<Float>($0.radius, 0)
+                    shape.gradient = Gradient(
+                        from: $0.center - reach, to: $0.center + reach, endColor: $0.color)
+                }
+                return shape
             }
 
             // Frozen shapes are rendered but never updated, so in prefix mode each level
@@ -183,17 +192,19 @@ public struct Fitter {
             let fixedBackground = colorArray(picture.background)
             // The background colour is not fitted: what shows between shapes is the gaps'
             // own colours (or, inside a region, the existing picture).
-            let fitsBackground = false
             let ground = regionBase ?? gapBase
             let minWidths: MLXArray? =
                 settings.minWidth > 0 ? MLXArray(Array(shapeMinWidths.dropFirst(frozenCount))) : nil
 
+            // Points, colours and, with gradients, end colours and axes.
             var parameters = [pointsArray(movable), colorsArray(movable)]
             var rates = [pointRate, colorRate]
-            if fitsBackground {
-                parameters.append(fixedBackground)
-                rates.append(colorRate)
+            if settings.gradients {
+                let arrays = gradientArrays(movable)
+                parameters += [arrays.endColors, arrays.axes]
+                rates += [colorRate, pointRate]
             }
+            let colorParameters = settings.gradients ? [1, 2] : [1]
             var adam = Adam(learningRates: rates)
 
             // Frozen shapes never change during the stage: paint them once, outside the
@@ -204,7 +215,8 @@ public struct Fitter {
                     points: frozenPoints, colors: frozenColors, background: fixedBackground,
                     crops: frozen.map {
                         cropRect(points: $0.points, margin: cropMargin, width: width, height: height)
-                    }, over: ground, mask: maskArray)
+                    }, over: ground, mask: maskArray,
+                    gradients: settings.gradients ? gradientArrays(frozen) : nil)
                 eval(rendered.image, rendered.boundaryDistance)
                 base = rendered
             }
@@ -223,10 +235,10 @@ public struct Fitter {
 
             let lossAndGradient = valueAndGrad(
                 { (arrays: [MLXArray]) -> [MLXArray] in
-                    let background = fitsBackground ? arrays[2] : fixedBackground
                     let (image, boundary) = rasterizer.render(
-                        points: arrays[0], colors: arrays[1], background: background,
-                        crops: crops, over: base, mask: maskArray)
+                        points: arrays[0], colors: arrays[1], background: fixedBackground,
+                        crops: crops, over: base, mask: maskArray,
+                        gradients: settings.gradients ? (arrays[3], arrays[2]) : nil)
                     return [
                         fitLoss(
                             image: image, target: targetArray, boundaryDistance: boundary,
@@ -239,6 +251,8 @@ public struct Fitter {
                 var result = picture
                 let points = parameters[0].asArray(Float.self)
                 let colors = parameters[1].asArray(Float.self)
+                let ends = settings.gradients ? parameters[2].asArray(Float.self) : []
+                let axes = settings.gradients ? parameters[3].asArray(Float.self) : []
                 for index in 0..<movable.count {
                     let base = index * Shape.pointCount * 2
                     result.shapes[frozenCount + index] = Shape(
@@ -246,11 +260,15 @@ public struct Fitter {
                             SIMD2(points[base + $0 * 2], points[base + $0 * 2 + 1])
                         },
                         color: RGB(
-                            r: colors[index * 3], g: colors[index * 3 + 1], b: colors[index * 3 + 2]))
-                }
-                if fitsBackground {
-                    let b = parameters[2].asArray(Float.self)
-                    result.background = RGB(r: b[0], g: b[1], b: b[2])
+                            r: colors[index * 3], g: colors[index * 3 + 1], b: colors[index * 3 + 2]),
+                        gradient: settings.gradients
+                            ? Gradient(
+                                from: SIMD2(axes[index * 4], axes[index * 4 + 1]),
+                                to: SIMD2(axes[index * 4 + 2], axes[index * 4 + 3]),
+                                endColor: RGB(
+                                    r: ends[index * 3], g: ends[index * 3 + 1],
+                                    b: ends[index * 3 + 2]))
+                            : nil)
                 }
                 return result
             }
@@ -260,7 +278,7 @@ public struct Fitter {
                 updateCrops()
                 let (_, gradients) = lossAndGradient(parameters)
                 parameters = adam.step(parameters: parameters, gradients: gradients)
-                for index in 1..<parameters.count {
+                for index in colorParameters {
                     parameters[index] = clip(parameters[index], min: 0, max: 1)
                 }
                 eval(parameters)

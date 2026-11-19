@@ -1,7 +1,7 @@
 import Foundation
 import LayerFitCore
 
-let usage = "usage: layerfit <image> <outdir> [--mode refit|prefix] [--shapes N] [--size N] [--steps N] [--min-width PX] [--folds avoid|allow]\n       tuning: [--softness PX] [--floor W] [--reach PX] [--xing W] [--seeds error|paper]\n               [--fold-weight W] [--fold-tolerance T]"
+let usage = "usage: layerfit <image> <outdir> [--mode refit|prefix] [--shapes N] [--size N] [--steps N] [--min-width PX] [--folds avoid|allow] [--fill flat|gradient]\n       tuning: [--softness PX] [--floor W] [--reach PX] [--xing W] [--seeds error|paper]\n               [--fold-weight W] [--fold-tolerance T]"
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("layerfit: \(message)\n".utf8))
@@ -48,6 +48,11 @@ while !arguments.isEmpty {
             fail("--folds must be allow or avoid, not “\(value)”")
         }
         settings.avoidFolds = value == "avoid"
+    case "--fill":
+        guard value == "flat" || value == "gradient" else {
+            fail("--fill must be flat or gradient, not “\(value)”")
+        }
+        settings.gradients = value == "gradient"
     case "--shapes": settings.totalShapes = positiveInt(max: 4096)
     case "--size": settings.workingSize = positiveInt(max: 2048)
     case "--steps": settings.stepsPerStage = positiveInt(max: 100_000)

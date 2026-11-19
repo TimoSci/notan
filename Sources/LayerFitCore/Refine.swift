@@ -145,8 +145,14 @@ public struct Refiner {
         let origin = SIMD2(Float(viewport.minX), Float(viewport.minY))
         func inPicture(_ level: Level) -> InnerLevel {
             InnerLevel(
-                shapes: level.picture.shapes.map {
-                    Shape(points: $0.points.map { $0 * scale + origin }, color: $0.color)
+                shapes: level.picture.shapes.map { shape in
+                    Shape(
+                        points: shape.points.map { $0 * scale + origin }, color: shape.color,
+                        gradient: shape.gradient.map {
+                            Gradient(
+                                from: $0.from * scale + origin, to: $0.to * scale + origin,
+                                endColor: $0.endColor)
+                        })
                 }, mse: level.mse)
         }
 

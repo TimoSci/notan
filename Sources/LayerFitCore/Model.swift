@@ -10,7 +10,22 @@ public struct RGB: Equatable, Sendable {
     }
 }
 
-/// One closed path of 4 cubic Bézier segments with a flat opaque colour, filled by the
+/// A straight colour ramp across a shape: the shape's own colour at `from`, running to
+/// `endColor` at `to`, and held constant beyond either end. In working-image pixels.
+public struct Gradient: Equatable, Sendable {
+    public var from: SIMD2<Float>
+    public var to: SIMD2<Float>
+    public var endColor: RGB
+
+    public init(from: SIMD2<Float>, to: SIMD2<Float>, endColor: RGB) {
+        self.from = from
+        self.to = to
+        self.endColor = endColor
+    }
+}
+
+/// One closed path of 4 cubic Bézier segments with an opaque fill (one flat colour, or a
+/// linear gradient), filled by the
 /// non-zero rule: where the outline overlaps itself the shape is still solid.
 /// Segment i runs p[3i], p[3i+1], p[3i+2], p[(3i+3) % 12].
 public struct Shape: Equatable, Sendable {
@@ -18,14 +33,19 @@ public struct Shape: Equatable, Sendable {
 
     public var points: [SIMD2<Float>]
     public var color: RGB
+    /// Nil for a flat fill of `color`.
+    public var gradient: Gradient?
     /// Finer shapes fitted inside this one and drawn clipped to its outline, if it has
     /// been refined.
     public var inner: Inner?
 
-    public init(points: [SIMD2<Float>], color: RGB, inner: Inner? = nil) {
+    public init(
+        points: [SIMD2<Float>], color: RGB, gradient: Gradient? = nil, inner: Inner? = nil
+    ) {
         precondition(points.count == Shape.pointCount, "a shape has exactly 12 control points")
         self.points = points
         self.color = color
+        self.gradient = gradient
         self.inner = inner
     }
 
@@ -172,7 +192,23 @@ public struct Picture: Equatable, Sendable {
     public var estimatedBytes: Int { estimatedBytes(maxDepth: .max) }
 
     public func estimatedBytes(maxDepth: Int) -> Int {
-        3 + shapeCount(maxDepth: maxDepth) * 51 + (gaps.count > 1 ? gaps.count * 3 : 0)
+        // A gradient adds a second colour and two points.
+        3 + shapeCount(maxDepth: maxDepth) * 51 + gradientCount(maxDepth: maxDepth) * 11
+            + (gaps.count > 1 ? gaps.count * 3 : 0)
+    }
+
+    /// The number of shapes drawn with a gradient when refinements deeper than `maxDepth`
+    /// are hidden.
+    public func gradientCount(maxDepth: Int) -> Int {
+        var total = Picture.count(shapes, depthLeft: maxDepth) { $0.gradient != nil }
+        if maxDepth > 0 {
+            for gap in gaps {
+                total += Picture.count(gap.inner?.shapes ?? [], depthLeft: maxDepth - 1) {
+                    $0.gradient != nil
+                }
+            }
+        }
+        return total
     }
 
     /// How many layers of refinement are shown: 0 when no shape or gap has visible children.
@@ -200,10 +236,13 @@ public struct Picture: Equatable, Sendable {
         shapes.map { innerDepth($0.inner) }.max() ?? 0
     }
 
-    private static func count(_ shapes: [Shape], depthLeft: Int) -> Int {
+    private static func count(
+        _ shapes: [Shape], depthLeft: Int, where counted: (Shape) -> Bool = { _ in true }
+    ) -> Int {
         shapes.reduce(0) { total, shape in
-            total + 1
-                + (depthLeft > 0 ? count(shape.inner?.shapes ?? [], depthLeft: depthLeft - 1) : 0)
+            total + (counted(shape) ? 1 : 0)
+                + (depthLeft > 0
+                    ? count(shape.inner?.shapes ?? [], depthLeft: depthLeft - 1, where: counted) : 0)
         }
     }
 
@@ -300,6 +339,8 @@ public struct FitSettings: Sendable {
     /// Whether shapes are kept from folding over themselves (bow-ties, loops, lobes folded
     /// back). See `foldRatio`.
     public var avoidFolds = true
+    /// Whether each shape is filled with a linear gradient instead of one flat colour.
+    public var gradients = false
 
     public init(
         totalShapes: Int = 128, workingSize: Int = 256, stepsPerStage: Int = 150,

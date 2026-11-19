@@ -14,6 +14,22 @@ public func colorsArray(_ shapes: [Shape]) -> MLXArray {
     return MLXArray(shapes.flatMap { [$0.color.r, $0.color.g, $0.color.b] }, [shapes.count, 3])
 }
 
+/// The gradients of the given shapes: axes [P, 2, 2] (the `from` and `to` points) and
+/// endColors [P, 3]. A flat shape gets its own colour at both ends.
+public func gradientArrays(_ shapes: [Shape]) -> (axes: MLXArray, endColors: MLXArray) {
+    guard !shapes.isEmpty else { return (MLXArray.zeros([0, 2, 2]), MLXArray.zeros([0, 3])) }
+    var axes: [Float] = []
+    var ends: [Float] = []
+    for shape in shapes {
+        let from = shape.gradient?.from ?? SIMD2(0, 0)
+        let to = shape.gradient?.to ?? SIMD2(1, 0)
+        let end = shape.gradient?.endColor ?? shape.color
+        axes += [from.x, from.y, to.x, to.y]
+        ends += [end.r, end.g, end.b]
+    }
+    return (MLXArray(axes, [shapes.count, 2, 2]), MLXArray(ends, [shapes.count, 3]))
+}
+
 /// [3]
 public func colorArray(_ color: RGB) -> MLXArray {
     MLXArray([color.r, color.g, color.b])
@@ -113,9 +129,13 @@ public struct Rasterizer {
     /// `base` is an already rendered picture to paint on top of, in place of the background.
     /// `mask` [H, W], 0…1, limits where shapes may paint: a shape's coverage is multiplied
     /// by it, as if the shapes were clipped to the masked region.
+    /// `gradients` (axes [P, 2, 2], endColors [P, 3]) fills each shape with a linear
+    /// gradient: `colors` at the first axis point, running to `endColors` at the second and
+    /// held beyond both.
     public func render(
         points: MLXArray, colors: MLXArray, background: MLXArray, crops: [PixelRect]? = nil,
-        over base: (image: MLXArray, boundaryDistance: MLXArray)? = nil, mask: MLXArray? = nil
+        over base: (image: MLXArray, boundaryDistance: MLXArray)? = nil, mask: MLXArray? = nil,
+        gradients: (axes: MLXArray, endColors: MLXArray)? = nil
     ) -> (image: MLXArray, boundaryDistance: MLXArray) {
         let shapeCount = points.dim(0)
         precondition(crops == nil || crops!.count == shapeCount)
@@ -145,7 +165,18 @@ public struct Rasterizer {
             boundary = minimum(boundary, stopGradient(distance.min(axis: -1)))
             for index in 0..<(end - start) {
                 let a = alpha[0..., 0..., index].expandedDimensions(axis: -1)  // [H, W, 1]
-                let color = colors[start + index].reshaped(1, 1, 3)
+                var color = colors[start + index].reshaped(1, 1, 3)
+                if let gradients {
+                    // How far along the axis each pixel lies, 0 at its start and 1 at its end.
+                    let from = gradients.axes[start + index, 0]
+                    let along = gradients.axes[start + index, 1] - from
+                    let x = pixelX.reshaped(height, width, 1) - from[0]
+                    let y = pixelY.reshaped(height, width, 1) - from[1]
+                    let t = clip(
+                        (x * along[0] + y * along[1]) / ((along * along).sum() + 1e-6), min: 0,
+                        max: 1)
+                    color = color + t * (gradients.endColors[start + index].reshaped(1, 1, 3) - color)
+                }
                 image = image * (1 - a) + color * a
             }
         }
