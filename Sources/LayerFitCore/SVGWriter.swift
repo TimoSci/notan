@@ -48,13 +48,13 @@ public func svg(_ picture: Picture, outputSize: CGSize, maxDepth: Int = .max) ->
     func write(_ shapes: [Shape], depthLeft: Int) {
         for shape in shapes {
             let d = pathData(shape)
-            lines.append("<path d=\"\(d)\" fill=\"\(hex(shape.color))\" fill-rule=\"evenodd\"/>")
+            lines.append("<path d=\"\(d)\" fill=\"\(hex(shape.color))\" fill-rule=\"nonzero\"/>")
             guard depthLeft > 0, let children = shape.inner?.shapes, !children.isEmpty else {
                 continue
             }
             clipCount += 1
             let id = "c\(clipCount)"
-            lines.append("<clipPath id=\"\(id)\"><path d=\"\(d)\" clip-rule=\"evenodd\"/></clipPath>")
+            lines.append("<clipPath id=\"\(id)\"><path d=\"\(d)\" clip-rule=\"nonzero\"/></clipPath>")
             lines.append("<g clip-path=\"url(#\(id))\">")
             write(children, depthLeft: depthLeft - 1)
             lines.append("</g>")

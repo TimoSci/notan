@@ -88,6 +88,7 @@ public struct Fitter {
         let scale = Float(max(width, height)) / 256
         var lossConfig = loss
         lossConfig.boundaryReach = loss.boundaryReach * scale
+        if !settings.avoidFolds { lossConfig.foldWeight = 0 }
         let pointRate = 1.0 * scale
         let colorRate: Float = 0.01
 

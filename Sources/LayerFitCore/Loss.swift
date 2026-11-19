@@ -17,6 +17,14 @@ public struct LossConfig: Sendable {
     public var widthWeight: Float = 0.1
     /// Weight of the penalty on sharp corners, applied only with a minimum width.
     public var cornerWeight: Float = 0.05
+    /// Weight of the penalty on shapes that fold over themselves; 0 allows folds.
+    /// Kept small on purpose: a fold only ever buys a sliver of fit, so a light touch
+    /// removes them all, while a heavy one also flattens long curved shapes (at 0.1 the
+    /// error at 128 shapes rose by half; at 0.001 it is unchanged).
+    public var foldWeight: Float = 0.001
+    /// How much of a shape may sweep backward round its centre before the fold penalty
+    /// applies. Long curved shapes sweep back a little without crossing themselves.
+    public var foldTolerance: Float = 0
 
     public init(
         boundaryReach: Float = 10, floorWeight: Float = 1.0, xingWeight: Float = 0.01,
@@ -99,6 +107,10 @@ public func fitLoss(
     var loss =
         weighted + config.floorWeight * floor
         + config.xingWeight * xingLoss(points: points)
+    if config.foldWeight > 0 {
+        loss =
+            loss + config.foldWeight * foldPenalty(points: points, tolerance: config.foldTolerance)
+    }
     if let minWidths {
         loss =
             loss + config.widthWeight * widthPenalty(points: points, minWidths: minWidths)

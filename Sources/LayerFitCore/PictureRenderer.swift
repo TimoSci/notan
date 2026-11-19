@@ -48,7 +48,7 @@ func uncoveredPixels(of picture: Picture) -> [Bool] {
     context.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1))
     for shape in picture.shapes {
         context.addPath(outline(of: shape))
-        context.fillPath(using: .evenOdd)
+        context.fillPath(using: .winding)
     }
     guard let image = context.makeImage() else {
         return [Bool](repeating: false, count: width * height)
@@ -158,13 +158,13 @@ private struct Painter {
         let path = outline(of: shape)
         context.setFillColor(color(shape.color, for: node))
         context.addPath(path)
-        context.fillPath(using: .evenOdd)
+        context.fillPath(using: .winding)
         guard depthLeft > 0, descends(into: node), let children = shape.inner?.shapes,
             !children.isEmpty
         else { return }
         context.saveGState()
         context.addPath(path)
-        context.clip(using: .evenOdd)
+        context.clip(using: .winding)
         paint(children, parent: node, in: context, depthLeft: depthLeft - 1)
         context.restoreGState()
     }
@@ -264,7 +264,7 @@ extension Picture {
         func find(in list: [Shape], parent: NodeID?, depthLeft: Int) -> NodeID? {
             for index in list.indices.reversed() {
                 let shape = list[index]
-                guard outline(of: shape).contains(location, using: .evenOdd) else { continue }
+                guard outline(of: shape).contains(location, using: .winding) else { continue }
                 let node = parent?.child(index) ?? .shape([index])
                 if depthLeft > 0, let children = shape.inner?.shapes,
                     let deeper = find(in: children, parent: node, depthLeft: depthLeft - 1)

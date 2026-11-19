@@ -10,7 +10,8 @@ public struct RGB: Equatable, Sendable {
     }
 }
 
-/// One closed path of 4 cubic Bézier segments with a flat opaque colour.
+/// One closed path of 4 cubic Bézier segments with a flat opaque colour, filled by the
+/// non-zero rule: where the outline overlaps itself the shape is still solid.
 /// Segment i runs p[3i], p[3i+1], p[3i+2], p[(3i+3) % 12].
 public struct Shape: Equatable, Sendable {
     public static let pointCount = 12
@@ -296,11 +297,15 @@ public struct FitSettings: Sendable {
     /// (it scales with the working size). Earlier shapes must be wider; see
     /// `minWidthSchedule`. 0 switches the check off.
     public var minWidth: Float = 0
+    /// Whether shapes are kept from folding over themselves (bow-ties, loops, lobes folded
+    /// back). See `foldRatio`.
+    public var avoidFolds = true
 
     public init(
         totalShapes: Int = 128, workingSize: Int = 256, stepsPerStage: Int = 150,
-        mode: LevelMode = .refit, minWidth: Float = 0
+        mode: LevelMode = .refit, minWidth: Float = 0, avoidFolds: Bool = true
     ) {
+        self.avoidFolds = avoidFolds
         self.totalShapes = totalShapes
         self.workingSize = workingSize
         self.stepsPerStage = stepsPerStage

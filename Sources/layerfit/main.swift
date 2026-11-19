@@ -1,7 +1,7 @@
 import Foundation
 import LayerFitCore
 
-let usage = "usage: layerfit <image> <outdir> [--mode refit|prefix] [--shapes N] [--size N] [--steps N] [--min-width PX]\n       tuning: [--softness PX] [--floor W] [--reach PX] [--xing W] [--seeds error|paper]"
+let usage = "usage: layerfit <image> <outdir> [--mode refit|prefix] [--shapes N] [--size N] [--steps N] [--min-width PX] [--folds avoid|allow]\n       tuning: [--softness PX] [--floor W] [--reach PX] [--xing W] [--seeds error|paper]\n               [--fold-weight W] [--fold-tolerance T]"
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("layerfit: \(message)\n".utf8))
@@ -43,11 +43,16 @@ while !arguments.isEmpty {
             fail("--min-width must be a non-negative number of pixels, not “\(value)”")
         }
         settings.minWidth = width
+    case "--folds":
+        guard value == "allow" || value == "avoid" else {
+            fail("--folds must be allow or avoid, not “\(value)”")
+        }
+        settings.avoidFolds = value == "avoid"
     case "--shapes": settings.totalShapes = positiveInt(max: 4096)
     case "--size": settings.workingSize = positiveInt(max: 2048)
     case "--steps": settings.stepsPerStage = positiveInt(max: 100_000)
     // Tuning levers, for experiments.
-    case "--softness", "--floor", "--reach", "--xing":
+    case "--softness", "--floor", "--reach", "--xing", "--fold-weight", "--fold-tolerance":
         guard let number = Float(value), number >= 0, number.isFinite else {
             fail("\(argument) must be a non-negative number, not “\(value)”")
         }
@@ -59,6 +64,8 @@ while !arguments.isEmpty {
         case "--reach":
             guard number > 0 else { fail("--reach must be greater than 0") }
             lossConfig.boundaryReach = number
+        case "--fold-weight": lossConfig.foldWeight = number
+        case "--fold-tolerance": lossConfig.foldTolerance = number
         default: lossConfig.xingWeight = number
         }
     default: fail("unknown option \(argument)\n\(usage)")
@@ -110,7 +117,10 @@ let levels = Fitter(target: target, settings: settings, loss: lossConfig, seedRu
         written += 1
     },
     isCancelled: { false })
+let ratios = levels.last?.picture.shapes.map { foldRatio(of: $0) } ?? []
 print(
     String(
-        format: "total %.1f s, %d levels, peak memory in use %.1f GB",
-        Date().timeIntervalSince(started), levels.count, Double(peakFitMemoryBytes()) / 1e9))
+        format: "total %.1f s, %d levels, peak memory in use %.1f GB; at the last level %d shapes sweep back over 5%%, %d over 15%%, %d over 30%%",
+        Date().timeIntervalSince(started), levels.count, Double(peakFitMemoryBytes()) / 1e9,
+        ratios.filter { $0 > 0.05 }.count, ratios.filter { $0 > 0.15 }.count,
+        ratios.filter { $0 > 0.3 }.count))

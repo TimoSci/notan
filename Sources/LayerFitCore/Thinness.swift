@@ -86,6 +86,48 @@ public func cornerPenalty(points: MLXArray) -> MLXArray {
     return (turn * turn).mean(axis: -1).sum()
 }
 
+// Keeping shapes from folding over themselves.
+//
+// Seen from its own centre, an unfolded outline sweeps round one way only. Where an outline
+// crosses itself (a bow-tie, a lobe folded back, a loop) part of it sweeps the other way.
+// The fold ratio is the share of the swept area that goes backward: 0 for any shape that
+// is star-shaped about its centre, 0.5 for a bow-tie. Dents and bulges cost nothing; a
+// shape curled most of the way round something does.
+
+/// The share of a shape's swept area that runs backward round its centre, 0…0.5.
+public func foldRatio(of shape: Shape) -> Float {
+    let polygon = samplePolygon(shape.points, samplesPerSegment: widthSamples)
+    let centre = polygon.reduce(SIMD2<Float>(0, 0), +) / Float(polygon.count)
+    var sweeps: [Float] = []
+    for index in polygon.indices {
+        let u = polygon[index] - centre
+        let v = polygon[(index + 1) % polygon.count] - centre
+        sweeps.append(u.x * v.y - u.y * v.x)
+    }
+    let total = sweeps.reduce(0) { $0 + abs($1) }
+    guard total > 1e-6 else { return 0 }
+    let direction: Float = sweeps.reduce(0, +) >= 0 ? 1 : -1
+    return sweeps.reduce(0) { $0 + max(-direction * $1, 0) } / total
+}
+
+/// Sum over shapes of their fold ratio, counting only what exceeds `tolerance`.
+/// points [P, 12, 2].
+public func foldPenalty(points: MLXArray, tolerance: Float = 0) -> MLXArray {
+    guard points.dim(0) > 0 else { return MLXArray(Float(0)) }
+    let (start, end) = polygonEnds()
+    let a = matmul(start, points)  // [P, E, 2]
+    let b = matmul(end, points)
+    let centre = a.mean(axis: 1, keepDims: true)
+    let u = a - centre
+    let v = b - centre
+    let sweep = u[0..., 0..., 0] * v[0..., 0..., 1] - u[0..., 0..., 1] * v[0..., 0..., 0]  // [P, E]
+    let direction = stopGradient(
+        which(sweep.sum(axis: -1, keepDims: true) .>= 0, MLXArray(Float(1)), MLXArray(Float(-1))))
+    let backward = maximum(-direction * sweep, 0).sum(axis: -1)
+    let total = sqrt(sweep * sweep + 1e-8).sum(axis: -1)
+    return maximum(backward / (total + 1e-6) - tolerance, 0).sum()
+}
+
 /// The minimum width for the shapes added at each stage. It shrinks as shapes accumulate,
 /// in proportion to 1 / √(shapes so far), and reaches `minWidth` at the last stage: big
 /// features first, finer ones later. Never more than a sixth of the picture's long side.

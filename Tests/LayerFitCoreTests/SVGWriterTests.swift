@@ -33,7 +33,7 @@ final class SVGWriterTests: XCTestCase {
         let paths = root.elements(forName: "path")
         XCTAssertEqual(paths[0].attribute(forName: "fill")?.stringValue, "#ff0000")
         XCTAssertEqual(paths[1].attribute(forName: "fill")?.stringValue, "#0080ff")
-        XCTAssertEqual(paths[0].attribute(forName: "fill-rule")?.stringValue, "evenodd")
+        XCTAssertEqual(paths[0].attribute(forName: "fill-rule")?.stringValue, "nonzero")
     }
 
     func testSVGPathHasFourCurvesAndCloses() throws {

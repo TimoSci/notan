@@ -177,13 +177,18 @@ public struct Rasterizer {
         let offY = relY - t * dy
         let distance = sqrt((offX * offX + offY * offY).min(axis: -1) + 1e-8)  // [H, W, C]
 
-        // Even-odd inside test by counting edge crossings of a ray toward +x.
+        // Non-zero inside test: a ray toward +x counts each edge it crosses as +1 or -1 by
+        // the edge's direction; the pixel is inside if these do not cancel. A shape that
+        // overlaps itself is therefore solid there, not cut out.
         // The sign carries no gradient; gradient flows through the distance.
         let straddles = (ay .> pixelY) .!= (by .> pixelY)
         let safeDy = which(straddles, dy, MLXArray(Float(1)))
         let crossX = ax + (pixelY - ay) / safeDy * dx
-        let crossings = logicalAnd(straddles, pixelX .< crossX).asType(.int32).sum(axis: -1)
-        let inside = remainder(crossings, MLXArray(Int32(2))) .== MLXArray(Int32(1))
+        let direction = which(by .> ay, MLXArray(Int32(1)), MLXArray(Int32(-1)))
+        let winding = which(
+            logicalAnd(straddles, pixelX .< crossX), direction, MLXArray(Int32(0))
+        ).sum(axis: -1)
+        let inside = winding .!= MLXArray(Int32(0))
         let sign = stopGradient(which(inside, MLXArray(Float(1)), MLXArray(Float(-1))))
 
         let alpha = sigmoid(sign * distance / softness)

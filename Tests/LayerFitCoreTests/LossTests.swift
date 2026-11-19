@@ -33,7 +33,8 @@ final class LossTests: XCTestCase {
         circle.points[2] = SIMD2(-5.5, 10)
         let points = pointsArray([circle])
         let image = MLXArray.ones([8, 8, 3]) * 0.3
-        let config = LossConfig()
+        var config = LossConfig()
+        config.foldWeight = 0  // this shape is also folded; that penalty has its own tests
         let loss = fitLoss(
             image: image, target: image, boundaryDistance: MLXArray.zeros([8, 8]),
             points: points, config: config

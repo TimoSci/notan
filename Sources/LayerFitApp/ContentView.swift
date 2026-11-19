@@ -74,6 +74,11 @@ public struct ContentView: View {
                 .help(
                     "Keeps shapes from thinning into slivers and spikes. The value is the narrowest allowed at the last level; earlier shapes must be wider."
                 )
+                Toggle("Avoid folds", isOn: $model.settings.avoidFolds)
+                    .toggleStyle(.checkbox)
+                    .help(
+                        "Keeps shapes from crossing over themselves into bow-ties, loops and folded lobes. Dents and bulges are unaffected; shapes curled most of the way round something are discouraged."
+                    )
                 LabeledContent("Steps") {
                     TextField("Steps", value: $model.settings.stepsPerStage, format: .number)
                         .labelsHidden()
