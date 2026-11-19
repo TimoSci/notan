@@ -296,6 +296,64 @@ final class RefineTests: XCTestCase {
         }
     }
 
+    /// 256×256: red left of a grey band, blue right of it; a white dot in the red and a
+    /// yellow dot in the blue.
+    func twoSidesPhoto() -> URL {
+        let image = Fixtures.image(width: 256, height: 256) { context in
+            context.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: 112, height: 256))
+            context.setFillColor(red: 0.5, green: 0.5, blue: 0.5, alpha: 1)
+            context.fill(CGRect(x: 112, y: 0, width: 32, height: 256))
+            context.setFillColor(red: 0, green: 0, blue: 1, alpha: 1)
+            context.fill(CGRect(x: 144, y: 0, width: 112, height: 256))
+            context.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
+            context.fillEllipse(in: CGRect(x: 36, y: 100, width: 40, height: 40))
+            context.setFillColor(red: 1, green: 1, blue: 0, alpha: 1)
+            context.fillEllipse(in: CGRect(x: 180, y: 60, width: 40, height: 40))
+        }
+        return Fixtures.write(image, name: "two-sides.png")
+    }
+
+    /// The 64×64 picture a first fit would give: the grey band, with a red and a blue gap.
+    func twoSidesPicture() -> LayerFitCore.Picture {
+        LayerFitCore.Picture(
+            width: 64, height: 64, background: .grey,
+            shapes: [rectangle(x: 28, y: -4, width: 8, height: 72, color: .grey)],
+            gaps: [Gap(color: .red), Gap(color: .blue)])
+    }
+
+    func testPlanForOneGapZoomsToThatGap() throws {
+        let plan = try XCTUnwrap(
+            refinePlan(
+                picture: twoSidesPicture(), node: .gap(1),
+                originalPixelSize: CGSize(width: 256, height: 256), workingSize: 64))
+        // The right gap is x 36…64; with the 4% margin it starts just left of 36.
+        XCTAssertEqual(plan.viewport.minX, 36 - 0.04 * 28, accuracy: 0.05)
+        XCTAssertEqual(plan.viewport.maxX, 64, accuracy: 1e-3)
+        XCTAssertEqual(plan.viewport.minY, 0, accuracy: 1e-3)
+        XCTAssertEqual(plan.height, 64)
+        XCTAssertNil(
+            refinePlan(
+                picture: twoSidesPicture(), node: .gap(4),
+                originalPixelSize: CGSize(width: 256, height: 256), workingSize: 64))
+    }
+
+    func testRefinerWorksInsideOneGapOnly() throws {
+        let settings = FitSettings(totalShapes: 1, workingSize: 64, stepsPerStage: 80)
+        let levels = try Refiner(
+            photoURL: twoSidesPhoto(), picture: twoSidesPicture(), node: .gap(1), settings: settings
+        ).run(progress: { _ in }, isCancelled: { false })
+        XCTAssertEqual(levels.map { $0.shapes.count }, [0, 1])
+        let child = levels[1].shapes[0]
+        // The yellow dot in the blue gap, not the white one in the red gap.
+        XCTAssertGreaterThan(child.color.g, 0.7)
+        XCTAssertLessThan(child.color.b, 0.3)
+        // Its centre is (200, 80) in the photo: (50, 20) in picture coordinates.
+        XCTAssertEqual(centroid(child).x, 50, accuracy: 2)
+        XCTAssertEqual(centroid(child).y, 20, accuracy: 2)
+        XCTAssertLessThan(levels[1].mse, levels[0].mse * 0.4)
+    }
+
     func testRefinerCanRefineTheBackground() throws {
         // The background region is white in the photo and in the picture: nothing to find,
         // but it must run and keep its shapes off the red disc.

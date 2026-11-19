@@ -83,6 +83,43 @@ final class FitterTests: XCTestCase {
         XCTAssertTrue(anyMoved)
     }
 
+    func testLevelsCarryGapColours() {
+        let levels = fit(disc(), shapes: 1)
+        // Level 0 is one gap in the mean colour; after the disc is covered, what is left
+        // is black.
+        XCTAssertEqual(levels[0].picture.gaps.count, 1)
+        XCTAssertEqual(levels[0].picture.gaps[0].color.r, levels[0].picture.background.r, accuracy: 1e-4)
+        XCTAssertEqual(levels[1].picture.gaps.count, 1)
+        XCTAssertLessThan(levels[1].picture.gaps[0].color.r, 0.05)
+    }
+
+    func testPrefixModeGetsGapColoursToo() {
+        // The background colour is frozen at the mean in prefix mode; the gap around the
+        // disc must still come out black.
+        let levels = fit(disc(), shapes: 1, mode: .prefix)
+        XCTAssertLessThan(levels[1].mse, 0.01)
+        XCTAssertLessThan(levels[1].picture.gaps[0].color.r, 0.05)
+        XCTAssertEqual(levels[1].picture.background, levels[0].picture.background)
+    }
+
+    func testGapsSplitByAShapeGetTheirOwnColours() {
+        // A white disc as tall as the picture, with red to its left and dark red to its
+        // right. One shape takes the disc, and the two sides become separate gaps.
+        let target = makeTarget(width: 48, height: 24) { x, y in
+            if inDisc(x, y, 24, 12, 14) { return .white }
+            return x < 24 ? .red : RGB(r: 0.6, g: 0, b: 0)
+        }
+        let settings = FitSettings(totalShapes: 1, workingSize: 48, stepsPerStage: 60)
+        let levels = Fitter(target: target, settings: settings)
+            .run(progress: { _ in }, isCancelled: { false })
+        let picture = levels[1].picture
+        XCTAssertEqual(picture.gaps.count, 2)
+        XCTAssertGreaterThan(picture.gaps[0].color.r, 0.9)
+        XCTAssertEqual(picture.gaps[1].color.r, 0.6, accuracy: 0.08)
+        // One flat background colour could not match both sides.
+        XCTAssertLessThan(levels[1].mse, 0.01)
+    }
+
     /// Three thin bright lines: without a width floor, shapes hug them.
     func stripes() -> TargetImage {
         makeTarget(width: 48, height: 48) { _, y in

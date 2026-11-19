@@ -12,6 +12,8 @@ struct PictureView: View {
     var maxDepth: Int = .max
     var selectedShape: LayerFitCore.Shape?
     var backgroundSelected = false
+    /// White where the selected gap shows; a gap has no outline to draw.
+    var selectedGapMask: CGImage?
     /// Called with the clicked point in picture coordinates, or nil for a click outside
     /// the picture.
     var onClick: ((SIMD2<Float>?) -> Void)?
@@ -53,6 +55,17 @@ struct PictureView: View {
 
     /// A dark line under a light one, so the outline shows on any colour.
     private func outlineSelection(of picture: LayerFitCore.Picture, in cg: CGContext, size: CGSize) {
+        if let selectedGapMask {
+            // Lighten the gap and leave everything else as it is.
+            cg.saveGState()
+            cg.translateBy(x: 0, y: size.height)
+            cg.scaleBy(x: 1, y: -1)  // images, and so masks, are bottom-up
+            cg.clip(to: CGRect(origin: .zero, size: size), mask: selectedGapMask)
+            cg.setFillColor(CGColor(gray: 1, alpha: 0.32))
+            cg.fill(CGRect(origin: .zero, size: size))
+            cg.restoreGState()
+            return
+        }
         guard selectedShape != nil || backgroundSelected else { return }
         let scaleX = size.width / CGFloat(picture.width)
         let scaleY = size.height / CGFloat(picture.height)

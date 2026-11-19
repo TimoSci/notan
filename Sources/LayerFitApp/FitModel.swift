@@ -105,10 +105,23 @@ public final class FitModel {
     /// Refinements are kept beside the levels, not inside them, so that one refinement can
     /// be shown on several levels.
     private struct Refinement {
-        /// The picture-level region it belongs to: a shape's number, or nil for the background.
-        var rootShape: Int?
+        var root: Root
         var madeAtLevel: Int
         var inner: Inner
+    }
+    /// The picture-level region a refinement belongs to, by number.
+    private enum Root: Equatable {
+        case shape(Int)
+        case gap(Int)
+
+        init(_ node: NodeID) {
+            self = node.inBackground ? .gap(node.gap) : .shape(node.path.first ?? 0)
+        }
+
+        var isGap: Bool {
+            if case .gap = self { return true }
+            return false
+        }
     }
     private var refinements: [LevelMode: [Refinement]] = [:]
 
@@ -170,11 +183,12 @@ public final class FitModel {
 
     /// The index in `refinements[mode]` of the refinement shown for a picture-level region
     /// on a level: the one made on that level, else (when shared) the one made nearest it.
-    private func refinementIndex(rootShape: Int?, mode: LevelMode, level: Int) -> Int? {
+    private func refinementIndex(root: Root, mode: LevelMode, level: Int) -> Int? {
         let all = refinements[mode] ?? []
-        let candidates = all.indices.filter { all[$0].rootShape == rootShape }
+        let candidates = all.indices.filter { all[$0].root == root }
         if let exact = candidates.first(where: { all[$0].madeAtLevel == level }) { return exact }
-        guard shares(mode) else { return nil }
+        // Gaps are different patches on every level, so their refinements never travel.
+        guard shares(mode), !root.isGap else { return nil }
         return candidates.min {
             let a = abs(all[$0].madeAtLevel - level)
             let b = abs(all[$1].madeAtLevel - level)
@@ -184,11 +198,14 @@ public final class FitModel {
 
     private func attachRefinements(to picture: inout LayerFitCore.Picture, mode: LevelMode, level: Int) {
         guard let all = refinements[mode], !all.isEmpty else { return }
-        if let index = refinementIndex(rootShape: nil, mode: mode, level: level) {
-            picture.backgroundInner = all[index].inner
+        // A picture whose gaps are not told apart still has gap 0: the whole uncovered area.
+        for gap in 0..<max(picture.gaps.count, 1) {
+            if let index = refinementIndex(root: .gap(gap), mode: mode, level: level) {
+                picture.setInner(all[index].inner, at: .gap(gap))
+            }
         }
         for shape in picture.shapes.indices {
-            if let index = refinementIndex(rootShape: shape, mode: mode, level: level) {
+            if let index = refinementIndex(root: .shape(shape), mode: mode, level: level) {
                 picture.shapes[shape].inner = all[index].inner
             }
         }
@@ -198,7 +215,7 @@ public final class FitModel {
     /// region this replaces (or creates) its refinement; deeper, it edits the refinement
     /// that region lives in.
     private func writeInner(_ inner: Inner, at node: NodeID, mode: LevelMode, level: Int) {
-        let rootShape: Int? = node.inBackground ? nil : node.path.first
+        let root = Root(node)
         let isRoot = node.inBackground ? node.path.isEmpty : node.path.count == 1
         var all = refinements[mode] ?? []
         defer { refinements[mode] = all }
@@ -207,17 +224,17 @@ public final class FitModel {
             // In Prefix mode a region has one refinement whatever level it was made on;
             // otherwise each level can have its own.
             let existing =
-                mode == .prefix
-                ? all.firstIndex { $0.rootShape == rootShape }
-                : all.firstIndex { $0.rootShape == rootShape && $0.madeAtLevel == level }
+                mode == .prefix && !root.isGap
+                ? all.firstIndex { $0.root == root }
+                : all.firstIndex { $0.root == root && $0.madeAtLevel == level }
             if let existing {
                 all[existing].inner = inner
             } else {
-                all.append(Refinement(rootShape: rootShape, madeAtLevel: level, inner: inner))
+                all.append(Refinement(root: root, madeAtLevel: level, inner: inner))
             }
             return
         }
-        guard let index = refinementIndex(rootShape: rootShape, mode: mode, level: level) else {
+        guard let index = refinementIndex(root: root, mode: mode, level: level) else {
             return
         }
         // Edit inside the refinement by hanging it on a stand-in picture.
@@ -275,11 +292,22 @@ public final class FitModel {
         return shownLevel?.picture.shape(at: selection)
     }
 
+    /// White where the selected gap shows, for highlighting it; nil unless a gap is selected.
+    public var selectedGapMask: CGImage? {
+        guard let selection, selection.isBackground, let picture = shownLevel?.picture else {
+            return nil
+        }
+        return maskImage(picture, node: selection, scale: 2)
+    }
+
     public var selectionLabel: String {
         guard let selection else { return "Whole picture" }
         let steps = selection.path.map { "\($0 + 1)" }.joined(separator: " › ")
         if selection.inBackground {
-            return steps.isEmpty ? "Background" : "Background › \(steps)"
+            // With one gap there is nothing to tell apart: it is simply the background.
+            let gapCount = shownLevel?.picture.gaps.count ?? 0
+            let name = gapCount > 1 ? "Gap \(selection.gap + 1)" : "Background"
+            return steps.isEmpty ? name : "\(name) › \(steps)"
         }
         return "Shape \(steps)"
     }

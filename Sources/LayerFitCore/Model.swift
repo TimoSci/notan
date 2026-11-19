@@ -71,39 +71,61 @@ public struct Inner: Equatable, Sendable {
     public var shapes: [Shape] { levels.isEmpty ? [] : levels[shownIndex].shapes }
 }
 
-/// Names a region of a picture: the background, or a shape reached by indices through the
-/// levels currently shown. `path[0]` indexes the picture's shapes (or the background's
-/// refinement when `inBackground`), `path[1]` that shape's children, and so on.
+/// Names a region of a picture: a gap (a patch no shape covers), or a shape reached by
+/// indices through the levels currently shown. `path[0]` indexes the picture's shapes (or
+/// the refinement of gap number `gap` when `inBackground`), `path[1]` that shape's
+/// children, and so on.
 public struct NodeID: Hashable, Sendable {
     public var inBackground: Bool
+    /// Which gap, when `inBackground`; otherwise 0.
+    public var gap: Int
     public var path: [Int]
 
-    public init(inBackground: Bool, path: [Int]) {
+    public init(inBackground: Bool, gap: Int = 0, path: [Int]) {
         self.inBackground = inBackground
+        self.gap = inBackground ? gap : 0
         self.path = path
     }
 
-    public static let background = NodeID(inBackground: true, path: [])
+    /// The whole uncovered area, for a picture whose gaps are not told apart. Same as gap 0.
+    public static let background = NodeID.gap(0)
+
+    public static func gap(_ index: Int) -> NodeID {
+        NodeID(inBackground: true, gap: index, path: [])
+    }
 
     public static func shape(_ path: [Int]) -> NodeID { NodeID(inBackground: false, path: path) }
 
+    /// True for a gap itself, as opposed to a shape fitted inside one.
     public var isBackground: Bool { inBackground && path.isEmpty }
 
     public func child(_ index: Int) -> NodeID {
-        NodeID(inBackground: inBackground, path: path + [index])
+        NodeID(inBackground: inBackground, gap: gap, path: path + [index])
     }
 
-    /// The region this one was fitted inside; nil for the background and for the
-    /// picture's own shapes.
+    /// The region this one was fitted inside; nil for a gap and for the picture's own shapes.
     public var parent: NodeID? {
         guard !path.isEmpty else { return nil }
-        if path.count == 1 { return inBackground ? .background : nil }
-        return NodeID(inBackground: inBackground, path: Array(path.dropLast()))
+        if path.count == 1 { return inBackground ? .gap(gap) : nil }
+        return NodeID(inBackground: inBackground, gap: gap, path: Array(path.dropLast()))
     }
 
     /// True if `other` is this node or lies inside it.
     public func contains(_ other: NodeID) -> Bool {
-        inBackground == other.inBackground && other.path.starts(with: path)
+        inBackground == other.inBackground && gap == other.gap && other.path.starts(with: path)
+    }
+}
+
+/// A patch of the picture no shape covers. It has no outline of its own: its edge is
+/// whatever its neighbours leave. It is stored as a colour only.
+public struct Gap: Equatable, Sendable {
+    public var color: RGB
+    /// Finer shapes fitted inside this gap, drawn above its colour and below every shape.
+    public var inner: Inner?
+
+    public init(color: RGB, inner: Inner? = nil) {
+        self.color = color
+        self.inner = inner
     }
 }
 
@@ -113,36 +135,59 @@ public struct Picture: Equatable, Sendable {
     public var height: Int
     public var background: RGB
     public var shapes: [Shape]
-    /// Finer shapes fitted in the part of the background no shape covers; drawn above the
-    /// background colour and below every shape.
-    public var backgroundInner: Inner?
+    /// The patches no shape covers, in reading order of their first pixel (see `gapMap`),
+    /// each with its own colour. Empty, or out of step with the shapes, means the gaps are
+    /// not told apart: the uncovered area is then one region in the background colour.
+    public var gaps: [Gap]
 
     public init(
-        width: Int, height: Int, background: RGB, shapes: [Shape], backgroundInner: Inner? = nil
+        width: Int, height: Int, background: RGB, shapes: [Shape], backgroundInner: Inner? = nil,
+        gaps: [Gap] = []
     ) {
         self.width = width
         self.height = height
         self.background = background
         self.shapes = shapes
-        self.backgroundInner = backgroundInner
+        self.gaps = gaps
+        if let backgroundInner { self.backgroundInner = backgroundInner }
     }
 
-    /// Background colour, then per shape 24 coordinates at 2 bytes plus 3 colour bytes.
-    /// Clipping a child to its parent costs nothing: the parent's outline is already stored.
+    /// The refinement of the uncovered area when gaps are not told apart: that of gap 0.
+    public var backgroundInner: Inner? {
+        get { gaps.first?.inner }
+        set {
+            if gaps.isEmpty {
+                if let newValue { gaps = [Gap(color: background, inner: newValue)] }
+            } else {
+                gaps[0].inner = newValue
+            }
+        }
+    }
+
+    /// Background colour, then per shape 24 coordinates at 2 bytes plus 3 colour bytes,
+    /// then 3 colour bytes per gap when the gaps have colours of their own.
+    /// Clipping a child to its parent costs nothing: the parent's outline is already stored;
+    /// likewise a gap's outline is given by the shapes around it.
     public var estimatedBytes: Int { estimatedBytes(maxDepth: .max) }
 
-    public func estimatedBytes(maxDepth: Int) -> Int { 3 + shapeCount(maxDepth: maxDepth) * 51 }
+    public func estimatedBytes(maxDepth: Int) -> Int {
+        3 + shapeCount(maxDepth: maxDepth) * 51 + (gaps.count > 1 ? gaps.count * 3 : 0)
+    }
 
-    /// How many layers of refinement are shown: 0 when no shape or background has
-    /// visible children.
+    /// How many layers of refinement are shown: 0 when no shape or gap has visible children.
     public var maxDepth: Int {
-        max(Picture.depth(of: shapes), Picture.innerDepth(backgroundInner))
+        max(Picture.depth(of: shapes), gaps.map { Picture.innerDepth($0.inner) }.max() ?? 0)
     }
 
     /// The number of shapes drawn when refinements deeper than `maxDepth` are hidden.
     public func shapeCount(maxDepth: Int) -> Int {
-        Picture.count(shapes, depthLeft: maxDepth)
-            + (maxDepth > 0 ? Picture.count(backgroundInner?.shapes ?? [], depthLeft: maxDepth - 1) : 0)
+        var total = Picture.count(shapes, depthLeft: maxDepth)
+        if maxDepth > 0 {
+            for gap in gaps {
+                total += Picture.count(gap.inner?.shapes ?? [], depthLeft: maxDepth - 1)
+            }
+        }
+        return total
     }
 
     private static func innerDepth(_ inner: Inner?) -> Int {
@@ -166,7 +211,12 @@ public struct Picture: Equatable, Sendable {
     /// The shape a node names, following the levels currently shown. Nil for the
     /// background or a path that no longer exists.
     public func shape(at node: NodeID) -> Shape? {
-        var list = node.inBackground ? (backgroundInner?.shapes ?? []) : shapes
+        var list: [Shape]
+        if node.inBackground {
+            list = gaps.indices.contains(node.gap) ? (gaps[node.gap].inner?.shapes ?? []) : []
+        } else {
+            list = shapes
+        }
         var found: Shape?
         for index in node.path {
             guard list.indices.contains(index) else { return nil }
@@ -177,20 +227,31 @@ public struct Picture: Equatable, Sendable {
     }
 
     public func inner(at node: NodeID) -> Inner? {
-        node.isBackground ? backgroundInner : shape(at: node)?.inner
+        if node.isBackground {
+            return gaps.indices.contains(node.gap) ? gaps[node.gap].inner : nil
+        }
+        return shape(at: node)?.inner
     }
 
     /// Replaces a region's refinement. Returns false if the node does not exist.
     @discardableResult
     public mutating func setInner(_ inner: Inner?, at node: NodeID) -> Bool {
         if node.isBackground {
+            if gaps.indices.contains(node.gap) {
+                gaps[node.gap].inner = inner
+                return true
+            }
+            // Gaps not told apart: the uncovered area as a whole is gap 0.
+            guard node.gap == 0, gaps.isEmpty else { return false }
             backgroundInner = inner
             return true
         }
         if node.inBackground {
-            guard var own = backgroundInner, !own.levels.isEmpty else { return false }
+            guard gaps.indices.contains(node.gap), var own = gaps[node.gap].inner,
+                !own.levels.isEmpty
+            else { return false }
             let done = Picture.setInner(inner, in: &own.levels[own.shownIndex].shapes, path: node.path[...])
-            backgroundInner = own
+            gaps[node.gap].inner = own
             return done
         }
         return Picture.setInner(inner, in: &shapes, path: node.path[...])

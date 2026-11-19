@@ -35,10 +35,14 @@ public struct FitRegion: Sendable {
     /// One value per pixel, 0…1: where the region is visible. Shapes are seeded, scored
     /// and painted only there.
     public var mask: [Float]
+    /// Where new shapes may start, if narrower than `mask`. Used to refine one gap: shapes
+    /// start in that gap, but are scored over every gap, so spilling into another one costs.
+    public var seedMask: [Float]?
 
-    public init(base: [Float], mask: [Float]) {
+    public init(base: [Float], mask: [Float], seedMask: [Float]? = nil) {
         self.base = base
         self.mask = mask
+        self.seedMask = seedMask
     }
 }
 
@@ -116,13 +120,29 @@ public struct Fitter {
             )
         }
 
+        // What lies under the shapes when fitting a whole picture: each gap in its own
+        // colour. Recomputed whenever a stage ends, and held fixed while one runs.
+        var gapBase: (image: MLXArray, boundaryDistance: MLXArray)?
+        func refreshGaps() {
+            guard region == nil else { return }
+            picture.assignGaps(from: target)
+            gapBase = picture.gapLayer(gapMap(of: picture)).map {
+                (
+                    MLXArray($0, [height, width, 3]),
+                    MLXArray.zeros([height, width]) + Rasterizer.noBoundary
+                )
+            }
+        }
+
         func render(_ picture: Picture, with rasterizer: Rasterizer) -> MLXArray {
             rasterizer.render(
                 points: pointsArray(picture.shapes), colors: colorsArray(picture.shapes),
-                background: colorArray(picture.background), over: regionBase, mask: maskArray
+                background: colorArray(picture.background), over: regionBase ?? gapBase,
+                mask: maskArray
             ).image
         }
         func finish(stage: Int) {
+            refreshGaps()
             let image = render(picture, with: sharp)
             let mse =
                 (maskArray.map { maskedMSE(image: image, target: targetArray, mask: $0) }
@@ -146,7 +166,7 @@ public struct Fitter {
             // A seed starts at least as wide as it must stay.
             let seeds = findSeeds(
                 target: target, current: current, count: addCount, rule: seedRule,
-                minRadius: max(2, stageMinWidth), mask: region?.mask)
+                minRadius: max(2, stageMinWidth), mask: region?.seedMask ?? region?.mask)
             shapeMinWidths += Array(repeating: stageMinWidth, count: addCount)
             let frozenCount = settings.mode == .prefix ? picture.shapes.count : 0
             picture.shapes += seeds.map {
@@ -160,8 +180,10 @@ public struct Fitter {
             let frozenPoints = pointsArray(frozen)
             let frozenColors = colorsArray(frozen)
             let fixedBackground = colorArray(picture.background)
-            // Inside a region the surroundings, background included, are fixed.
-            let fitsBackground = settings.mode == .refit && region == nil
+            // The background colour is not fitted: what shows between shapes is the gaps'
+            // own colours (or, inside a region, the existing picture).
+            let fitsBackground = false
+            let ground = regionBase ?? gapBase
             let minWidths: MLXArray? =
                 settings.minWidth > 0 ? MLXArray(Array(shapeMinWidths.dropFirst(frozenCount))) : nil
 
@@ -175,13 +197,13 @@ public struct Fitter {
 
             // Frozen shapes never change during the stage: paint them once, outside the
             // gradient, and fit the new shapes on top.
-            var base = regionBase
+            var base = ground
             if frozenCount > 0 {
                 let rendered = rasterizer.render(
                     points: frozenPoints, colors: frozenColors, background: fixedBackground,
                     crops: frozen.map {
                         cropRect(points: $0.points, margin: cropMargin, width: width, height: height)
-                    }, over: regionBase, mask: maskArray)
+                    }, over: ground, mask: maskArray)
                 eval(rendered.image, rendered.boundaryDistance)
                 base = rendered
             }

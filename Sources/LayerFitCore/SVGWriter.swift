@@ -1,5 +1,17 @@
 import CoreGraphics
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
+
+private func pngData(_ image: CGImage) -> Data? {
+    let data = NSMutableData()
+    guard
+        let destination = CGImageDestinationCreateWithData(
+            data, UTType.png.identifier as CFString, 1, nil)
+    else { return nil }
+    CGImageDestinationAddImage(destination, image, nil)
+    return CGImageDestinationFinalize(destination) ? data as Data : nil
+}
 
 private func number(_ value: Float) -> String {
     var text = String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), Double(value))
@@ -56,8 +68,25 @@ public func svg(_ picture: Picture, outputSize: CGSize, maxDepth: Int = .max) ->
     lines.append(
         "<rect width=\"\(picture.width)\" height=\"\(picture.height)\" "
             + "fill=\"\(hex(picture.background))\"/>")
-    if maxDepth > 0, let children = picture.backgroundInner?.shapes {
-        write(children, depthLeft: maxDepth - 1)
+    // The gaps' colours, one per picture pixel, under everything else. The shapes are
+    // drawn over its blocky edges, so only whole gaps show.
+    if picture.gaps.count > 1, let layer = picture.gapLayer(gapMap(of: picture)),
+        let image = cgImage(rgb: layer, width: picture.width, height: picture.height),
+        let png = pngData(image)
+    {
+        lines.append(
+            "<image width=\"\(picture.width)\" height=\"\(picture.height)\" "
+                + "preserveAspectRatio=\"none\" style=\"image-rendering:pixelated\" "
+                + "href=\"data:image/png;base64,\(png.base64EncodedString())\"/>")
+    } else if picture.gaps.count == 1, picture.gapsMatch(gapMap(of: picture)) {
+        lines.append(
+            "<rect width=\"\(picture.width)\" height=\"\(picture.height)\" "
+                + "fill=\"\(hex(picture.gaps[0].color))\"/>")
+    }
+    if maxDepth > 0 {
+        for gap in picture.gaps {
+            write(gap.inner?.shapes ?? [], depthLeft: maxDepth - 1)
+        }
     }
     write(picture.shapes, depthLeft: maxDepth)
     lines.append("</svg>")

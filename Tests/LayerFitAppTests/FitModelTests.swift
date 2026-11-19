@@ -552,14 +552,18 @@ final class FitModelTests: XCTestCase {
         XCTAssertNotNil(model.shownPicture?.inner(at: .shape([1, 1])))
     }
 
-    func testPrefixBackgroundRefinementIsShared() async {
+    func testGapRefinementsStayOnTheirLevelEvenWhenShared() async {
+        // Gaps are different patches on every level, so their refinements never travel.
         let model = await fittedModel(mode: .prefix)
         model.userMovedSlider(to: 1)
         model.select(at: corner)
         model.refine()
         await waitFor("refined") { model.status == .done && model.sliderLast == 2 }
         model.select(at: nil)
+        XCTAssertEqual(model.shownPicture?.backgroundInner?.levels.count, 3)
         model.userMovedSlider(to: 3)
+        XCTAssertNil(model.shownPicture?.backgroundInner)
+        model.userMovedSlider(to: 1)
         XCTAssertEqual(model.shownPicture?.backgroundInner?.levels.count, 3)
     }
 
@@ -588,35 +592,151 @@ final class FitModelTests: XCTestCase {
         XCTAssertEqual(refinedShapes(model, atLevel: 2), [1])
     }
 
+    /// Level k has k small circles side by side, so each can be clicked on its own:
+    /// shape i is at x = 1.5 + 2i.
+    nonisolated static func spreadRunner(stages: Int) -> FitRunner {
+        { _, _, progress, _ in
+            var levels: [Level] = []
+            for stage in 0...stages {
+                let shapes = (0..<stage).map {
+                    LayerFitCore.Shape.circle(
+                        center: SIMD2(1.5 + 2 * Float($0), 4), radius: 0.9,
+                        color: RGB(r: 1, g: 0, b: 0))
+                }
+                let picture = LayerFitCore.Picture(
+                    width: 8, height: 8, background: RGB(r: 0, g: 0, b: 0), shapes: shapes)
+                let level = Level(picture: picture, mse: 0.1)
+                levels.append(level)
+                progress(
+                    FitProgress(
+                        stage: stage, stageCount: stages, step: 1, stepCount: 1, picture: picture,
+                        finishedLevel: level))
+            }
+            return levels
+        }
+    }
+
     func testRefitCarryPrefersTheRefinementMadeNearestTheLevelShown() async {
         var runs = 0
-        let model = await fittedModel { url, picture, node, settings, progress, isCancelled in
+        let model = makeModel(Self.spreadRunner(stages: 4)) { url, picture, node, settings, progress, isCancelled in
             runs += 1
             return try Self.instantRefiner(stages: runs == 1 ? 2 : 1)(
                 url, picture, node, settings, progress, isCancelled)
         }
+        model.open(photoURL)
+        model.start()
+        await waitFor("done") { model.status == .done }
         model.carryRefinements = true
-        // The background exists on every level: refine it on level 1 (three levels) and
-        // again on level 2 (two levels).
-        for level in [1, 2] {
+        // Refine the second shape on level 2 (three levels) and again on level 4 (two levels).
+        let second = SIMD2<Float>(3.5, 4)
+        for level in [2, 4] {
             model.select(at: nil)
             model.userMovedSlider(to: level)
-            model.select(at: corner)
+            model.select(at: second)
+            if model.selection != .shape([1]) { model.selectParent() }
+            XCTAssertEqual(model.selection, .shape([1]))
             model.refine()
-            await waitFor("refined on \(level)") { runs == level && model.status == .done }
+            let expected = level == 2 ? 1 : 2
+            await waitFor("refined on \(level)") { runs == expected && model.status == .done }
         }
-        func backgroundLevels(at level: Int) -> Int? {
+        func levelsOfSecondShape(at level: Int) -> Int? {
             model.select(at: nil)
             model.userMovedSlider(to: level)
-            return model.shownPicture?.backgroundInner?.levels.count
+            return model.shownPicture?.inner(at: .shape([1]))?.levels.count
         }
-        XCTAssertEqual(backgroundLevels(at: 1), 3)  // its own
-        XCTAssertEqual(backgroundLevels(at: 2), 2)  // its own, not the one carried from level 1
-        XCTAssertEqual(backgroundLevels(at: 3), 2)  // nearest: made on level 2
-        XCTAssertEqual(backgroundLevels(at: 0), 3)  // nearest: made on level 1
+        XCTAssertEqual(levelsOfSecondShape(at: 2), 3)  // its own
+        XCTAssertEqual(levelsOfSecondShape(at: 4), 2)  // its own, not the one carried from level 2
+        XCTAssertEqual(levelsOfSecondShape(at: 3), 3)  // equally near both: the earlier one
+        XCTAssertNil(levelsOfSecondShape(at: 1))  // level 1 has no second shape
         model.carryRefinements = false
-        XCTAssertNil(backgroundLevels(at: 3))
-        XCTAssertEqual(backgroundLevels(at: 1), 3)
+        XCTAssertNil(levelsOfSecondShape(at: 3))
+        XCTAssertEqual(levelsOfSecondShape(at: 4), 2)
+    }
+
+    // MARK: Gaps
+
+    /// One level: a bar down the middle of an 8×8 picture, leaving a red gap on the left
+    /// and a blue gap on the right.
+    nonisolated static func barRunner() -> FitRunner {
+        { _, _, progress, _ in
+            let corners: [SIMD2<Float>] = [SIMD2(3, -1), SIMD2(5, -1), SIMD2(5, 9), SIMD2(3, 9)]
+            var points: [SIMD2<Float>] = []
+            for i in 0..<4 {
+                let a = corners[i]
+                let b = corners[(i + 1) % 4]
+                points += [a, a + (b - a) / 3, a + (b - a) * 2 / 3]
+            }
+            let bar = LayerFitCore.Shape(points: points, color: RGB(r: 0.5, g: 0.5, b: 0.5))
+            let empty = LayerFitCore.Picture(
+                width: 8, height: 8, background: RGB(r: 0.5, g: 0.5, b: 0.5), shapes: [],
+                gaps: [Gap(color: RGB(r: 0.5, g: 0.5, b: 0.5))])
+            let split = LayerFitCore.Picture(
+                width: 8, height: 8, background: RGB(r: 0.5, g: 0.5, b: 0.5), shapes: [bar],
+                gaps: [Gap(color: RGB(r: 1, g: 0, b: 0)), Gap(color: RGB(r: 0, g: 0, b: 1))])
+            let levels = [Level(picture: empty, mse: 0.2), Level(picture: split, mse: 0.05)]
+            for (stage, level) in levels.enumerated() {
+                progress(
+                    FitProgress(
+                        stage: stage, stageCount: 1, step: 1, stepCount: 1, picture: level.picture,
+                        finishedLevel: level))
+            }
+            return levels
+        }
+    }
+
+    func barModel() async -> FitModel {
+        let model = makeModel(Self.barRunner())
+        model.open(photoURL)
+        model.start()
+        await waitFor("done") { model.status == .done }
+        return model
+    }
+
+    func testClickingBetweenShapesSelectsThatGap() async {
+        let model = await barModel()
+        model.select(at: SIMD2(1, 4))
+        XCTAssertEqual(model.selection, .gap(0))
+        XCTAssertEqual(model.selectionLabel, "Gap 1")
+        XCTAssertNotNil(model.selectedGapMask)
+        model.select(at: SIMD2(7, 4))
+        XCTAssertEqual(model.selection, .gap(1))
+        XCTAssertEqual(model.selectionLabel, "Gap 2")
+        model.select(at: SIMD2(4, 4))
+        XCTAssertEqual(model.selection, .shape([0]))
+        XCTAssertNil(model.selectedGapMask)
+    }
+
+    func testASingleGapIsCalledTheBackground() async {
+        let model = await barModel()
+        model.userMovedSlider(to: 0)
+        model.select(at: SIMD2(1, 4))
+        XCTAssertEqual(model.selection, .gap(0))
+        XCTAssertEqual(model.selectionLabel, "Background")
+    }
+
+    func testRefiningOneGapLeavesTheOtherAlone() async {
+        var seen: NodeID?
+        let model = makeModel(Self.barRunner()) { url, picture, node, settings, progress, isCancelled in
+            seen = node
+            return try Self.instantRefiner()(url, picture, node, settings, progress, isCancelled)
+        }
+        model.open(photoURL)
+        model.start()
+        await waitFor("done") { model.status == .done }
+        model.select(at: SIMD2(7, 4))
+        model.refine()
+        await waitFor("refined") { model.status == .done && model.sliderLast == 2 }
+        XCTAssertEqual(seen, .gap(1))
+        XCTAssertEqual(model.shownPicture?.inner(at: .gap(1))?.levels.count, 3)
+        XCTAssertNil(model.shownPicture?.inner(at: .gap(0)))
+        // The gap's own slider scrubs its refinement.
+        model.userMovedSlider(to: 1)
+        XCTAssertEqual(model.shownPicture?.inner(at: .gap(1))?.shapes.count, 1)
+        // Its children are shapes under the gap.
+        XCTAssertEqual(model.caption.hasPrefix("2 shapes"), true)
+        model.select(at: nil)
+        model.userMovedSlider(to: 0)
+        XCTAssertNil(model.shownPicture?.inner(at: .gap(0)))
     }
 
     func testChangingCarryClearsTheSelection() async {

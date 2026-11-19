@@ -110,7 +110,7 @@ public struct ContentView: View {
                 Divider().frame(height: 16)
                 Text(model.selectionLabel)
                     .foregroundStyle(model.selection == nil ? .secondary : .primary)
-                    .help("Click a shape in the picture to select it; click outside the picture or press Esc to select the whole picture again.")
+                    .help("Click a shape, or a gap between shapes, to select it; click outside the picture or press Esc to select the whole picture again.")
                 Button("Parent") { model.selectParent() }
                     .disabled(model.selection == nil || model.isFitting)
                     .help("Select the shape this one was fitted inside")
@@ -138,6 +138,7 @@ public struct ContentView: View {
                 showsOriginal: holdingOriginal || (model.shownPicture == nil && original != nil),
                 maxDepth: model.shownDepth, selectedShape: model.selectedShape,
                 backgroundSelected: model.selection?.isBackground ?? false,
+                selectedGapMask: model.selectedGapMask,
                 onClick: { model.select(at: $0) })
             if model.photoURL == nil {
                 Text("Drop a photo here")

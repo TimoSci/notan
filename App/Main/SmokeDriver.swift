@@ -98,6 +98,31 @@
             await pause(0.2)
             snapshot("9-toggled-to-refit")
 
+            // Select a gap between shapes and refine inside it.
+            model.userMovedSlider(to: 6)
+            await pause(0.2)
+            if let picture = model.shownPicture {
+                note("level 6 has \(picture.gaps.count) gaps, \(picture.shapes.count) shapes")
+                search: for y in stride(from: 4, to: picture.height, by: 8) {
+                    for x in stride(from: 4, to: picture.width, by: 8) {
+                        let point = SIMD2(Float(x), Float(y))
+                        if picture.hitTest(point)?.isBackground == true {
+                            model.select(at: point)
+                            break search
+                        }
+                    }
+                }
+            }
+            await pause(0.2)
+            snapshot("8a-gap-selected")
+            note("selected: \(model.selectionLabel), canRefine=\(model.canRefine)")
+            model.settings.totalShapes = 32
+            model.refine()
+            await wait("gap refine: done") { !model.isFitting }
+            snapshot("8b-gap-refined")
+            note("after gap refine: status=\(model.status) slider=\(model.sliderStop)/\(model.sliderLast) depth=\(model.shownDepth)/\(model.maxDepth) error=\(model.errorMessage ?? "nil")")
+            model.select(at: nil)
+
             // Refine inside one shape of the Re-fit result, then scrub and hide it.
             model.userMovedSlider(to: 4)
             await pause(0.2)

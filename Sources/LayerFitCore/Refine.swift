@@ -22,7 +22,16 @@ public func refinePlan(
 ) -> RefinePlan? {
     let whole = CGRect(x: 0, y: 0, width: picture.width, height: picture.height)
     var viewport = whole
-    if !node.isBackground {
+    if node.isBackground {
+        // One gap: zoom to its extent. Gaps not told apart: the whole picture, as gap 0.
+        let map = picture.gaps.isEmpty ? nil : gapMap(of: picture)
+        if let map, picture.gapsMatch(map) {
+            guard let box = map.box(of: node.gap) else { return nil }
+            viewport = box.insetBy(dx: -0.04 * box.width, dy: -0.04 * box.height).intersection(whole)
+        } else if node.gap != 0 {
+            return nil
+        }
+    } else {
         guard let shape = picture.shape(at: node) else { return nil }
         let polygon = samplePolygon(shape.points, samplesPerSegment: 8)
             .filter { $0.x.isFinite && $0.y.isFinite }
@@ -112,6 +121,16 @@ public struct Refiner {
             style: .mask(of: node))
         let mask = stride(from: 0, to: maskPixels.count, by: 3).map { maskPixels[$0] }
         guard mask.reduce(0, +) >= 4 else { throw RefineError.regionNotVisible }
+        // Shapes fitted in a gap are drawn under the picture's shapes but not clipped to
+        // the gap, so they are scored over every gap in view: straying into a neighbouring
+        // gap then counts against them.
+        var scored = mask
+        if node.isBackground {
+            let all = renderRegion(
+                picture, region: viewport, width: plan.width, height: plan.height,
+                style: .backgroundMask)
+            scored = stride(from: 0, to: all.count, by: 3).map { all[$0] }
+        }
 
         let target = try loadPhotoRegion(
             url: photoURL, region: viewport, pictureWidth: picture.width,
@@ -133,7 +152,7 @@ public struct Refiner {
 
         let fitter = Fitter(
             target: target, settings: settings, loss: loss,
-            region: FitRegion(base: base, mask: mask))
+            region: FitRegion(base: base, mask: scored, seedMask: mask))
         let levels = fitter.run(
             progress: {
                 progress(
