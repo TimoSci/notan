@@ -130,3 +130,48 @@ public func loadPreview(url: URL, maxPixelSize: Int) -> CGImage? {
     ]
     return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
 }
+
+/// The photo's pixel size as displayed, after its orientation is applied.
+public func photoPixelSize(url: URL) throws -> CGSize {
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+        CGImageSourceGetCount(source) > 0,
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+        let width = properties[kCGImagePropertyPixelWidth] as? Int,
+        let height = properties[kCGImagePropertyPixelHeight] as? Int, width >= 1, height >= 1
+    else { throw PhotoError.unreadable(url) }
+    let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+    return (5...8).contains(orientation)
+        ? CGSize(width: height, height: width) : CGSize(width: width, height: height)
+}
+
+/// Part of the photo, resampled to width × height, for refining inside one region.
+/// `region` is in the coordinates of a picture of pictureWidth × pictureHeight that covers
+/// the whole upright photo. Read from the photo's full resolution, so zooming in finds
+/// detail the first fit could not see.
+public func loadPhotoRegion(
+    url: URL, region: CGRect, pictureWidth: Int, pictureHeight: Int, width: Int, height: Int
+) throws -> TargetImage {
+    let full = try photoPixelSize(url: url)
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+        throw PhotoError.unreadable(url)
+    }
+    let options: [CFString: Any] = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceThumbnailMaxPixelSize: Int(max(full.width, full.height)),
+        kCGImageSourceShouldCacheImmediately: true,
+    ]
+    guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    else { throw PhotoError.unreadable(url) }
+    let scaleX = CGFloat(image.width) / CGFloat(pictureWidth)
+    let scaleY = CGFloat(image.height) / CGFloat(pictureHeight)
+    let crop = CGRect(
+        x: region.minX * scaleX, y: region.minY * scaleY, width: region.width * scaleX,
+        height: region.height * scaleY
+    ).integral.intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+    guard crop.width >= 1, crop.height >= 1, let cropped = image.cropping(to: crop) else {
+        throw PhotoError.unreadable(url)
+    }
+    return TargetImage(
+        width: width, height: height, pixels: rgbPixels(of: cropped, width: width, height: height))
+}

@@ -95,11 +95,24 @@ public struct ContentView: View {
                 .help(
                     "Re-fit: every level is re-optimised as a whole. Prefix: each level is exactly the first shapes of the next."
                 )
+                .disabled(model.isRefining)
+                Divider().frame(height: 16)
+                Text(model.selectionLabel)
+                    .foregroundStyle(model.selection == nil ? .secondary : .primary)
+                    .help("Click a shape in the picture to select it; click outside the picture or press Esc to select the whole picture again.")
+                Button("Parent") { model.selectParent() }
+                    .disabled(model.selection == nil || model.isFitting)
+                    .help("Select the shape this one was fitted inside")
                 Spacer()
+                Button("Refine selection") { model.refine() }
+                    .disabled(!model.canRefine)
+                    .help(
+                        "Fit finer shapes only inside the selected shape, zoomed into that part of the photo, using the settings above"
+                    )
                 // Return starts a fit, but must not restart one that is already running.
                 Button(model.isFitting ? "Restart" : "Start") { model.start() }
                     .keyboardShortcut(model.isFitting ? nil : .defaultAction)
-                    .disabled(model.photoURL == nil)
+                    .disabled(model.photoURL == nil || model.isRefining)
             }
         }
         .padding(12)
@@ -111,7 +124,10 @@ public struct ContentView: View {
         ZStack {
             PictureView(
                 picture: model.shownPicture, original: original,
-                showsOriginal: holdingOriginal || (model.shownPicture == nil && original != nil))
+                showsOriginal: holdingOriginal || (model.shownPicture == nil && original != nil),
+                maxDepth: model.shownDepth, selectedShape: model.selectedShape,
+                backgroundSelected: model.selection?.isBackground ?? false,
+                onClick: { model.select(at: $0) })
             if model.photoURL == nil {
                 Text("Drop a photo here")
                     .font(.title2)
@@ -123,26 +139,44 @@ public struct ContentView: View {
 
     // MARK: Bottom
 
-    private var lastStop: Int { max(model.levels.count - 1, 0) }
-
     private var stopLabel: String {
         guard !model.levels.isEmpty else { return "" }
-        if case .fitting(_, let stageCount) = model.status { return "\(model.shownStop) of \(stageCount)" }
-        return "\(model.shownStop) of \(lastStop)"
+        // While the whole picture is being fitted, count against the stages still to come.
+        if model.selection == nil, !model.isRefining, case .fitting(_, let stageCount) = model.status {
+            return "\(model.sliderStop) of \(stageCount)"
+        }
+        return "\(model.sliderStop) of \(model.sliderLast)"
     }
 
     private var levelBar: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
-                Text("Level")
+                Text(model.selection == nil ? "Level" : "Level in selection")
+                    .frame(minWidth: 116, alignment: .leading)
+                    .help("Steps through the levels of the selected shape, or of the whole picture when nothing is selected")
                 Slider(
                     value: Binding(
-                        get: { Double(model.shownStop) },
+                        get: { Double(model.sliderStop) },
                         set: { model.userMovedSlider(to: Int($0.rounded())) }),
-                    in: 0...Double(max(lastStop, 1)), step: 1
+                    in: 0...Double(max(model.sliderLast, 1)), step: 1
                 )
-                .disabled(model.levels.count < 2)
+                .disabled(model.sliderLast < 1 || model.isRefining)
                 Text(stopLabel)
+                    .monospacedDigit()
+                    .frame(minWidth: 64, alignment: .trailing)
+            }
+            HStack(spacing: 12) {
+                Text("Depth")
+                    .frame(minWidth: 116, alignment: .leading)
+                    .help("How many layers of refinement inside shapes are shown, across the whole picture")
+                Slider(
+                    value: Binding(
+                        get: { Double(model.shownDepth) },
+                        set: { model.setDepth(Int($0.rounded())) }),
+                    in: 0...Double(max(model.maxDepth, 1)), step: 1
+                )
+                .disabled(model.maxDepth < 1 || model.isRefining)
+                Text(model.levels.isEmpty ? "" : "\(model.shownDepth) of \(model.maxDepth)")
                     .monospacedDigit()
                     .frame(minWidth: 64, alignment: .trailing)
             }
@@ -175,13 +209,18 @@ public struct ContentView: View {
         .background {
             // Left and right arrows step through the levels from anywhere in the window.
             Group {
-                Button("") { model.userMovedSlider(to: model.shownStop - 1) }
+                Button("") { model.userMovedSlider(to: model.sliderStop - 1) }
                     .keyboardShortcut(.leftArrow, modifiers: [])
-                Button("") { model.userMovedSlider(to: model.shownStop + 1) }
+                    .disabled(model.sliderLast < 1)
+                Button("") { model.userMovedSlider(to: model.sliderStop + 1) }
                     .keyboardShortcut(.rightArrow, modifiers: [])
+                    .disabled(model.sliderLast < 1)
+                // Esc goes back to the whole picture.
+                Button("") { model.select(at: nil) }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(model.selection == nil)
             }
             .opacity(0)
-            .disabled(model.levels.count < 2)
         }
     }
 
@@ -190,7 +229,7 @@ public struct ContentView: View {
         case .idle:
             Text(model.photoURL == nil ? " " : "Ready").foregroundStyle(.secondary)
         case .fitting(let stage, let stageCount):
-            Text("Fitting stage \(max(stage, 1)) of \(stageCount)")
+            Text("\(model.isRefining ? "Refining" : "Fitting") stage \(max(stage, 1)) of \(stageCount)")
             ProgressView(value: Double(stage), total: Double(max(stageCount, 1)))
                 .frame(width: 160)
             Button("Cancel") { model.cancel() }

@@ -111,9 +111,11 @@ public struct Rasterizer {
     /// outside its rectangle a shape counts as absent and its edge as far away. This is
     /// what keeps time and memory in check when there are many small shapes.
     /// `base` is an already rendered picture to paint on top of, in place of the background.
+    /// `mask` [H, W], 0…1, limits where shapes may paint: a shape's coverage is multiplied
+    /// by it, as if the shapes were clipped to the masked region.
     public func render(
         points: MLXArray, colors: MLXArray, background: MLXArray, crops: [PixelRect]? = nil,
-        over base: (image: MLXArray, boundaryDistance: MLXArray)? = nil
+        over base: (image: MLXArray, boundaryDistance: MLXArray)? = nil, mask: MLXArray? = nil
     ) -> (image: MLXArray, boundaryDistance: MLXArray) {
         let shapeCount = points.dim(0)
         precondition(crops == nil || crops!.count == shapeCount)
@@ -139,6 +141,7 @@ public struct Rasterizer {
                 alpha = padded(alpha, widths: widths)
                 distance = padded(distance, widths: widths, value: MLXArray(Rasterizer.noBoundary))
             }
+            if let mask { alpha = alpha * mask.expandedDimensions(axis: -1) }
             boundary = minimum(boundary, stopGradient(distance.min(axis: -1)))
             for index in 0..<(end - start) {
                 let a = alpha[0..., 0..., index].expandedDimensions(axis: -1)  // [H, W, 1]

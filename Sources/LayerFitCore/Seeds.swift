@@ -22,9 +22,12 @@ public enum SeedRule: String, Sendable, CaseIterable {
 /// `current` has the same layout as `target.pixels`.
 public func findSeeds(
     target: TargetImage, current: [Float], count: Int, errorThreshold: Float = 0.1,
-    colorLevels: Int = 4, rule: SeedRule = .error, minRadius: Float = 2
+    colorLevels: Int = 4, rule: SeedRule = .error, minRadius: Float = 2, mask: [Float]? = nil
 ) -> [Seed] {
     precondition(current.count == target.pixels.count)
+    precondition(mask == nil || mask!.count == target.width * target.height)
+    // With a mask (one value per pixel, 0…1) only the masked region is seeded.
+    func inPlay(_ i: Int) -> Bool { mask.map { $0[i] >= 0.5 } ?? true }
     guard count > 0 else { return [] }
     let width = target.width
     let height = target.height
@@ -43,7 +46,7 @@ public func findSeeds(
             let level = min(Int32(t * Float(colorLevels)), Int32(colorLevels - 1))
             quantised = quantised * Int32(colorLevels) + max(level, 0)
         }
-        error[i] = sum.squareRoot()
+        error[i] = inPlay(i) ? sum.squareRoot() : 0
         if error[i] > errorThreshold { label[i] = quantised }
     }
 
@@ -100,7 +103,9 @@ public func findSeeds(
 
     // Not enough regions: fall back to the worst remaining pixels, kept apart.
     if seeds.count < count {
-        let order = (0..<pixelCount).sorted { error[$0] > error[$1] }
+        let order = (0..<pixelCount).sorted {
+            inPlay($0) != inPlay($1) ? inPlay($0) : error[$0] > error[$1]
+        }
         for spacing in [Float(4), 0] {
             for i in order where seeds.count < count {
                 let p = SIMD2(Float(i % width) + 0.5, Float(i / width) + 0.5)

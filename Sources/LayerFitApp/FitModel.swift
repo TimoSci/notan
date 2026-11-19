@@ -10,6 +10,13 @@ public typealias FitRunner = (
 
 public typealias PhotoLoader = (URL, Int) throws -> LoadedPhoto
 
+/// Runs one refinement to completion on the calling thread: photo, picture as shown, the
+/// region to refine, settings, progress, isCancelled.
+public typealias RefineRunner = (
+    URL, LayerFitCore.Picture, NodeID, FitSettings, @escaping (RefineProgress) -> Void,
+    @escaping () -> Bool
+) throws -> [InnerLevel]
+
 private final class CancelFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelled = false
@@ -23,6 +30,23 @@ private final class CancelFlag: @unchecked Sendable {
     func cancel() {
         lock.lock()
         cancelled = true
+        lock.unlock()
+    }
+}
+
+private final class FailureBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Error?
+
+    var error: Error? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(_ error: Error) {
+        lock.lock()
+        stored = error
         lock.unlock()
     }
 }
@@ -50,7 +74,16 @@ public final class FitModel {
     /// Minimum shape width at the finest level, in pixels at 256 px; 0 is off.
     public static let minWidthChoices: [Float] = [0, 2, 4, 6, 8]
 
-    public var settings = FitSettings()
+    public var settings = FitSettings() {
+        didSet {
+            // A selection names a shape of one mode's picture.
+            if oldValue.mode != settings.mode, !isRefining { selection = nil }
+        }
+    }
+    /// The region the Level slider and Refine act on; nil is the whole picture.
+    public private(set) var selection: NodeID?
+    /// True while a refinement inside a shape is running (as opposed to a whole-picture fit).
+    public private(set) var isRefining = false
     public private(set) var photoURL: URL?
     public private(set) var photo: LoadedPhoto?
     /// Finished levels per mode, for the loaded photo. Level 0 is the background alone.
@@ -63,6 +96,8 @@ public final class FitModel {
     public var errorMessage: String?
 
     private var stop = 0
+    /// How many layers of refinement to show; nil shows them all.
+    private var depthLimit: Int?
     private var fittingMode: LevelMode?
     private var generation = 0
     private var cancelFlag: CancelFlag?
@@ -73,15 +108,21 @@ public final class FitModel {
 
     private let runFit: FitRunner
     private let loadPhotoFile: PhotoLoader
+    private let runRefine: RefineRunner
 
     public init(
         runFit: @escaping FitRunner = { target, settings, progress, isCancelled in
             Fitter(target: target, settings: settings).run(progress: progress, isCancelled: isCancelled)
         },
-        loadPhoto: @escaping PhotoLoader = { try LayerFitCore.loadPhoto(url: $0, workingSize: $1) }
+        loadPhoto: @escaping PhotoLoader = { try LayerFitCore.loadPhoto(url: $0, workingSize: $1) },
+        runRefine: @escaping RefineRunner = { url, picture, node, settings, progress, isCancelled in
+            try Refiner(photoURL: url, picture: picture, node: node, settings: settings)
+                .run(progress: progress, isCancelled: isCancelled)
+        }
     ) {
         self.runFit = runFit
         self.loadPhotoFile = loadPhoto
+        self.runRefine = runRefine
     }
 
     // MARK: What is shown
@@ -109,8 +150,82 @@ public final class FitModel {
     public var caption: String {
         guard let picture = shownPicture else { return "" }
         return FitModel.caption(
-            shapes: picture.shapes.count, bytes: picture.estimatedBytes,
-            fileBytes: photo?.fileBytes ?? 0)
+            shapes: picture.shapeCount(maxDepth: shownDepth),
+            bytes: picture.estimatedBytes(maxDepth: shownDepth), fileBytes: photo?.fileBytes ?? 0)
+    }
+
+    // MARK: Depth
+
+    /// How many layers of refinement the shown picture has.
+    public var maxDepth: Int { shownPicture?.maxDepth ?? 0 }
+
+    /// How many of them are drawn.
+    public var shownDepth: Int { min(depthLimit ?? Int.max, maxDepth) }
+
+    public func setDepth(_ depth: Int) {
+        guard !isRefining else { return }
+        let clamped = max(0, min(depth, maxDepth))
+        depthLimit = clamped == maxDepth ? nil : clamped
+        if let selection, FitModel.depth(of: selection) > shownDepth { self.selection = nil }
+    }
+
+    /// 0 for the picture's own shapes and the background, 1 for shapes fitted inside
+    /// those, and so on.
+    private static func depth(of node: NodeID) -> Int {
+        node.inBackground ? node.path.count : node.path.count - 1
+    }
+
+    // MARK: Selection
+
+    /// The selected shape, for outlining; nil when nothing or the background is selected.
+    public var selectedShape: LayerFitCore.Shape? {
+        guard let selection else { return nil }
+        return shownLevel?.picture.shape(at: selection)
+    }
+
+    public var selectionLabel: String {
+        guard let selection else { return "Whole picture" }
+        let steps = selection.path.map { "\($0 + 1)" }.joined(separator: " › ")
+        if selection.inBackground {
+            return steps.isEmpty ? "Background" : "Background › \(steps)"
+        }
+        return "Shape \(steps)"
+    }
+
+    /// Selects what is under a click, given in picture coordinates; nil (a click outside
+    /// the picture) selects the whole picture again.
+    public func select(at point: SIMD2<Float>?) {
+        guard !isFitting else { return }
+        guard let point, let picture = shownLevel?.picture else {
+            selection = nil
+            return
+        }
+        selection = picture.hitTest(point, maxDepth: shownDepth)
+    }
+
+    /// Moves the selection to the region the selected shape was fitted inside, or to the
+    /// whole picture if it has none.
+    public func selectParent() {
+        guard !isFitting else { return }
+        selection = selection?.parent
+    }
+
+    // MARK: The Level slider
+
+    private var selectedInner: Inner? {
+        guard let selection else { return nil }
+        return shownLevel?.picture.inner(at: selection)
+    }
+
+    /// The Level slider's position: within the selected region's refinement, or within the
+    /// picture's own levels when nothing is selected.
+    public var sliderStop: Int {
+        selection == nil ? shownStop : (selectedInner?.shownIndex ?? 0)
+    }
+
+    /// The slider's last position.
+    public var sliderLast: Int {
+        selection == nil ? max(levels.count - 1, 0) : max((selectedInner?.levels.count ?? 1) - 1, 0)
     }
 
     public nonisolated static func caption(shapes: Int, bytes: Int, fileBytes: Int) -> String {
@@ -145,6 +260,8 @@ public final class FitModel {
             return
         }
         abandonRun()
+        selection = nil
+        depthLimit = nil
         photoURL = url
         photo = loaded
         results = [:]
@@ -166,6 +283,8 @@ public final class FitModel {
             return
         }
         abandonRun()
+        selection = nil
+        depthLimit = nil
         photo = loaded
 
         let mode = settings.mode
@@ -204,12 +323,86 @@ public final class FitModel {
         }
     }
 
+    public var canRefine: Bool {
+        selection != nil && !isFitting && shownLevel != nil && photoURL != nil
+    }
+
+    /// Fits finer shapes inside the selected region of the level shown, using the current
+    /// settings, and attaches them to it. Any refinement that region already has is
+    /// replaced. The view is locked until it finishes or is cancelled.
+    public func refine() {
+        guard canRefine, let node = selection, let url = photoURL, let level = shownLevel else {
+            return
+        }
+        settings.stepsPerStage = min(
+            max(settings.stepsPerStage, FitModel.stepsRange.lowerBound), FitModel.stepsRange.upperBound)
+        abandonRun()
+
+        let mode = settings.mode
+        let rootStop = shownStop
+        let runSettings = settings
+        let picture = level.picture
+        depthLimit = nil
+        isRefining = true
+        status = .fitting(stage: 0, stageCount: stageSchedule(totalShapes: runSettings.totalShapes).count)
+
+        generation += 1
+        let run = generation
+        let flag = CancelFlag()
+        cancelFlag = flag
+        let runRefine = self.runRefine
+        let failure = FailureBox()
+
+        let (stream, continuation) = AsyncStream.makeStream(of: RefineProgress.self)
+        FitModel.fitQueue.async {
+            do {
+                _ = try runRefine(
+                    url, picture, node, runSettings, { continuation.yield($0) }, { flag.isCancelled })
+            } catch {
+                failure.set(error)
+            }
+            continuation.finish()
+        }
+        Task { [weak self] in
+            var finished: [InnerLevel] = []
+            for await progress in stream {
+                guard let self, self.generation == run, !flag.isCancelled else { continue }
+                self.status = .fitting(stage: progress.stage, stageCount: progress.stageCount)
+                if let level = progress.finishedLevel {
+                    finished.append(level)
+                    self.results[mode]?[rootStop].picture.setInner(
+                        Inner(levels: finished, shown: finished.count - 1), at: node)
+                }
+            }
+            guard let self, self.generation == run else { return }
+            self.isRefining = false
+            self.cancelFlag = nil
+            if let error = failure.error {
+                self.errorMessage = error.localizedDescription
+                self.status = .done
+            } else {
+                self.status = flag.isCancelled ? .cancelled : .done
+            }
+        }
+    }
+
     /// Stops the fit at its next step and keeps the levels finished so far.
     public func cancel() {
         cancelFlag?.cancel()
     }
 
     public func userMovedSlider(to newStop: Int) {
+        guard !isRefining else { return }
+        if let selection {
+            guard var inner = selectedInner, !inner.levels.isEmpty, levels.indices.contains(shownStop)
+            else { return }
+            inner.shown = max(0, min(newStop, inner.levels.count - 1))
+            // Read the position first: it depends on `results`, which is about to be modified.
+            let mode = settings.mode
+            let rootStop = shownStop
+            results[mode]?[rootStop].picture.setInner(inner, at: selection)
+            return
+        }
         stop = max(0, min(newStop, levels.count - 1))
         // Parking on the newest level means "keep following".
         followsLatest = stop == levels.count - 1
@@ -218,7 +411,7 @@ public final class FitModel {
     /// Writes the level shown on the slider as SVG, at the original photo's pixel size.
     public func exportSVG(to url: URL) throws {
         guard let level = shownLevel, let photo else { throw ExportError.nothingToExport }
-        try svg(level.picture, outputSize: photo.originalPixelSize)
+        try svg(level.picture, outputSize: photo.originalPixelSize, maxDepth: shownDepth)
             .write(to: url, atomically: true, encoding: .utf8)
     }
 
@@ -231,6 +424,7 @@ public final class FitModel {
         generation += 1
         livePicture = nil
         fittingMode = nil
+        isRefining = false
     }
 
     private func receive(_ progress: FitProgress, mode: LevelMode) {

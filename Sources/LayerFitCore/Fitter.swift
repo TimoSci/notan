@@ -27,6 +27,21 @@ public struct FitProgress: Sendable {
 /// The most memory MLX has held for arrays in use at once in this process, in bytes.
 public func peakFitMemoryBytes() -> Int { Memory.peakMemory }
 
+/// Restricts a fit to one region of an existing picture, for refining inside a shape.
+public struct FitRegion: Sendable {
+    /// The picture as it stands, at the target's size: row-major RGB 0…1. New shapes are
+    /// painted on top of it, and it is not changed.
+    public var base: [Float]
+    /// One value per pixel, 0…1: where the region is visible. Shapes are seeded, scored
+    /// and painted only there.
+    public var mask: [Float]
+
+    public init(base: [Float], mask: [Float]) {
+        self.base = base
+        self.mask = mask
+    }
+}
+
 /// Layer-wise fitting after LIVE: shapes are added in stages, each seeded where the
 /// picture is most wrong, then refined by gradient descent through the soft rasteriser.
 public struct Fitter {
@@ -34,6 +49,7 @@ public struct Fitter {
     public let settings: FitSettings
     public let loss: LossConfig
     public let seedRule: SeedRule
+    public let region: FitRegion?
 
     /// How often, in optimisation steps, an unfinished stage reports its current picture.
     public static let progressInterval = 10
@@ -46,12 +62,15 @@ public struct Fitter {
 
     public init(
         target: TargetImage, settings: FitSettings, loss: LossConfig = .init(),
-        seedRule: SeedRule = .error
+        seedRule: SeedRule = .error, region: FitRegion? = nil
     ) {
+        precondition(region == nil || region!.base.count == target.pixels.count)
+        precondition(region == nil || region!.mask.count == target.width * target.height)
         self.target = target
         self.settings = settings
         self.loss = loss
         self.seedRule = seedRule
+        self.region = region
     }
 
     /// Blocking. Returns the levels finished so far, level 0 first, when done or cancelled.
@@ -88,14 +107,26 @@ public struct Fitter {
         var picture = Picture(width: width, height: height, background: target.meanColor, shapes: [])
         var levels: [Level] = []
 
+        // Inside a region: start from the existing picture and stay within the mask.
+        let maskArray = region.map { MLXArray($0.mask, [height, width]) }
+        let regionBase: (image: MLXArray, boundaryDistance: MLXArray)? = region.map {
+            (
+                MLXArray($0.base, [height, width, 3]),
+                MLXArray.zeros([height, width]) + Rasterizer.noBoundary
+            )
+        }
+
         func render(_ picture: Picture, with rasterizer: Rasterizer) -> MLXArray {
             rasterizer.render(
                 points: pointsArray(picture.shapes), colors: colorsArray(picture.shapes),
-                background: colorArray(picture.background)
+                background: colorArray(picture.background), over: regionBase, mask: maskArray
             ).image
         }
         func finish(stage: Int) {
-            let mse = plainMSE(image: render(picture, with: sharp), target: targetArray).item(Float.self)
+            let image = render(picture, with: sharp)
+            let mse =
+                (maskArray.map { maskedMSE(image: image, target: targetArray, mask: $0) }
+                ?? plainMSE(image: image, target: targetArray)).item(Float.self)
             let level = Level(picture: picture, mse: mse)
             levels.append(level)
             progress(
@@ -115,7 +146,7 @@ public struct Fitter {
             // A seed starts at least as wide as it must stay.
             let seeds = findSeeds(
                 target: target, current: current, count: addCount, rule: seedRule,
-                minRadius: max(2, stageMinWidth))
+                minRadius: max(2, stageMinWidth), mask: region?.mask)
             shapeMinWidths += Array(repeating: stageMinWidth, count: addCount)
             let frozenCount = settings.mode == .prefix ? picture.shapes.count : 0
             picture.shapes += seeds.map {
@@ -129,7 +160,8 @@ public struct Fitter {
             let frozenPoints = pointsArray(frozen)
             let frozenColors = colorsArray(frozen)
             let fixedBackground = colorArray(picture.background)
-            let fitsBackground = settings.mode == .refit
+            // Inside a region the surroundings, background included, are fixed.
+            let fitsBackground = settings.mode == .refit && region == nil
             let minWidths: MLXArray? =
                 settings.minWidth > 0 ? MLXArray(Array(shapeMinWidths.dropFirst(frozenCount))) : nil
 
@@ -143,13 +175,13 @@ public struct Fitter {
 
             // Frozen shapes never change during the stage: paint them once, outside the
             // gradient, and fit the new shapes on top.
-            var base: (image: MLXArray, boundaryDistance: MLXArray)?
+            var base = regionBase
             if frozenCount > 0 {
                 let rendered = rasterizer.render(
                     points: frozenPoints, colors: frozenColors, background: fixedBackground,
                     crops: frozen.map {
                         cropRect(points: $0.points, margin: cropMargin, width: width, height: height)
-                    })
+                    }, over: regionBase, mask: maskArray)
                 eval(rendered.image, rendered.boundaryDistance)
                 base = rendered
             }
@@ -171,11 +203,12 @@ public struct Fitter {
                     let background = fitsBackground ? arrays[2] : fixedBackground
                     let (image, boundary) = rasterizer.render(
                         points: arrays[0], colors: arrays[1], background: background,
-                        crops: crops, over: base)
+                        crops: crops, over: base, mask: maskArray)
                     return [
                         fitLoss(
                             image: image, target: targetArray, boundaryDistance: boundary,
-                            points: arrays[0], config: lossConfig, minWidths: minWidths)
+                            points: arrays[0], config: lossConfig, minWidths: minWidths,
+                            mask: maskArray)
                     ]
                 }, argumentNumbers: Array(parameters.indices))
 

@@ -2,27 +2,78 @@ import LayerFitCore
 import SwiftUI
 
 /// Shows a fitted picture drawn from its vectors at the view's full resolution, or the
-/// original photo, keeping the aspect ratio and centred.
+/// original photo, keeping the aspect ratio and centred. Reports clicks in picture
+/// coordinates and outlines the selected region.
 struct PictureView: View {
     var picture: LayerFitCore.Picture?
     var original: CGImage?
     var showsOriginal: Bool
+    /// Refinements nested deeper than this are not drawn.
+    var maxDepth: Int = .max
+    var selectedShape: LayerFitCore.Shape?
+    var backgroundSelected = false
+    /// Called with the clicked point in picture coordinates, or nil for a click outside
+    /// the picture.
+    var onClick: ((SIMD2<Float>?) -> Void)?
 
     var body: some View {
-        Canvas { context, size in
-            if showsOriginal, let original {
-                let rect = fit(
-                    CGSize(width: original.width, height: original.height), in: size)
-                context.draw(Image(decorative: original, scale: 1), in: rect)
-            } else if let picture {
-                let rect = fit(CGSize(width: picture.width, height: picture.height), in: size)
-                context.withCGContext { cg in
-                    cg.translateBy(x: rect.minX, y: rect.minY)
-                    draw(picture, in: cg, size: rect.size)
+        GeometryReader { geometry in
+            Canvas { context, size in
+                if showsOriginal, let original {
+                    let rect = fit(
+                        CGSize(width: original.width, height: original.height), in: size)
+                    context.draw(Image(decorative: original, scale: 1), in: rect)
+                } else if let picture {
+                    let rect = fit(CGSize(width: picture.width, height: picture.height), in: size)
+                    context.withCGContext { cg in
+                        cg.translateBy(x: rect.minX, y: rect.minY)
+                        draw(picture, in: cg, size: rect.size, maxDepth: maxDepth)
+                        outlineSelection(of: picture, in: cg, size: rect.size)
+                    }
                 }
             }
+            .contentShape(Rectangle())
+            .gesture(
+                SpatialTapGesture().onEnded { tap in
+                    guard let picture, !showsOriginal else { return }
+                    let rect = fit(
+                        CGSize(width: picture.width, height: picture.height), in: geometry.size)
+                    guard rect.contains(tap.location), rect.width > 0, rect.height > 0 else {
+                        onClick?(nil)
+                        return
+                    }
+                    onClick?(
+                        SIMD2(
+                            Float((tap.location.x - rect.minX) / rect.width) * Float(picture.width),
+                            Float((tap.location.y - rect.minY) / rect.height) * Float(picture.height)))
+                })
         }
         .background(Color(nsColor: .underPageBackgroundColor))
+    }
+
+    /// A dark line under a light one, so the outline shows on any colour.
+    private func outlineSelection(of picture: LayerFitCore.Picture, in cg: CGContext, size: CGSize) {
+        guard selectedShape != nil || backgroundSelected else { return }
+        let scaleX = size.width / CGFloat(picture.width)
+        let scaleY = size.height / CGFloat(picture.height)
+        var transform = CGAffineTransform(scaleX: scaleX, y: scaleY)
+        let path: CGPath
+        if let selectedShape {
+            guard let scaled = outline(of: selectedShape).copy(using: &transform) else { return }
+            path = scaled
+        } else {
+            path = CGPath(rect: CGRect(origin: .zero, size: size).insetBy(dx: 2, dy: 2), transform: nil)
+        }
+        cg.saveGState()
+        cg.clip(to: CGRect(origin: .zero, size: size))
+        cg.setLineJoin(.round)
+        for (width, color) in [(4.0, CGColor(gray: 0, alpha: 0.85)), (1.5, CGColor(gray: 1, alpha: 1))] {
+            cg.setLineWidth(width)
+            cg.setStrokeColor(color)
+            cg.addPath(path)
+            cg.strokePath()
+        }
+        cg.restoreGState()
     }
 
     private func fit(_ content: CGSize, in container: CGSize) -> CGRect {

@@ -98,6 +98,31 @@
             await pause(0.2)
             snapshot("9-toggled-to-refit")
 
+            // Refine inside one shape of the Re-fit result, then scrub and hide it.
+            model.userMovedSlider(to: 4)
+            await pause(0.2)
+            if let picture = model.shownPicture {
+                model.select(at: SIMD2(Float(picture.width) * 0.5, Float(picture.height) * 0.8))
+            }
+            await pause(0.2)
+            snapshot("9a-selected")
+            note("selected: \(model.selectionLabel), canRefine=\(model.canRefine)")
+            model.settings.totalShapes = 32
+            model.refine()
+            await wait("refine: done") { !model.isRefining && model.status != .fitting(stage: 0, stageCount: 10) && !model.isFitting }
+            snapshot("9b-refined")
+            note("after refine: status=\(model.status) slider=\(model.sliderStop)/\(model.sliderLast) depth=\(model.shownDepth)/\(model.maxDepth) error=\(model.errorMessage ?? "nil")")
+            model.userMovedSlider(to: max(model.sliderLast / 2, 1))
+            await pause(0.2)
+            snapshot("9c-refined-middle")
+            model.setDepth(0)
+            await pause(0.2)
+            snapshot("9d-depth-0")
+            model.setDepth(1)
+            model.select(at: nil)
+            await pause(0.2)
+            snapshot("9e-whole-picture")
+
             do {
                 try model.exportSVG(to: folder.appendingPathComponent("export.svg"))
                 note("exported level \(model.shownStop) of refit")

@@ -35,6 +35,12 @@ public func plainMSE(image: MLXArray, target: MLXArray) -> MLXArray {
     return (diff * diff).mean()
 }
 
+/// Mean squared error over the channels of the masked pixels. mask [H, W], 0…1.
+public func maskedMSE(image: MLXArray, target: MLXArray, mask: MLXArray) -> MLXArray {
+    let diff = image - target
+    return ((diff * diff).sum(axis: -1) * mask).sum() / (3 * mask.sum() + 1e-6)
+}
+
 private func selector(offset: Int) -> MLXArray {
     let segments = Shape.pointCount / 3
     var rows = [Float](repeating: 0, count: segments * Shape.pointCount)
@@ -73,16 +79,25 @@ public func xingLoss(points: MLXArray) -> MLXArray {
 /// image, target [H, W, 3]; boundaryDistance [H, W]; points [P, 12, 2] of the shapes that
 /// can move. Boundary-weighted error (LIVE's UDF loss) plus a plain error floor plus Xing.
 /// With `minWidths` [P], also penalises shapes narrower than their minimum and sharp corners.
+/// With `mask` [H, W], only the masked pixels count.
 public func fitLoss(
     image: MLXArray, target: MLXArray, boundaryDistance: MLXArray, points: MLXArray,
-    config: LossConfig, minWidths: MLXArray? = nil
+    config: LossConfig, minWidths: MLXArray? = nil, mask: MLXArray? = nil
 ) -> MLXArray {
     let diff = image - target
-    let squared = (diff * diff).sum(axis: -1)  // [H, W]
-    let weight = stopGradient(maximum(1 - boundaryDistance / config.boundaryReach, 0))
+    var squared = (diff * diff).sum(axis: -1)  // [H, W]
+    var weight = stopGradient(maximum(1 - boundaryDistance / config.boundaryReach, 0))
+    let floor: MLXArray
+    if let mask {
+        squared = squared * mask
+        weight = weight * mask
+        floor = squared.sum() / (mask.sum() + 1e-6)
+    } else {
+        floor = squared.mean()
+    }
     let weighted = (weight * squared).sum() / (weight.sum() + 1e-6)
     var loss =
-        weighted + config.floorWeight * squared.mean()
+        weighted + config.floorWeight * floor
         + config.xingWeight * xingLoss(points: points)
     if let minWidths {
         loss =
