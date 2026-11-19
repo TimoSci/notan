@@ -157,6 +157,12 @@ Written entirely as MLX array operations so MLX can differentiate it:
 4. Composite back to front over the background:
    `C = C·(1 − a) + colour·a`.
 
+One part of step 2 is not array operations: finding which edge is nearest to
+each pixel, and the sign, is a small Metal program run through MLX, because
+as array operations it took most of the fitting time. Its two answers carry
+no gradient, so there are still no hand-written gradients; the distance to
+the edge it finds is then worked out with array operations.
+
 The builder must keep memory in check at 256 shapes and 512 px, for example
 by processing shapes in chunks. 512 GB of unified memory is available, but
 speed matters more than using it.

@@ -75,9 +75,10 @@ public func cropRect(points: [SIMD2<Float>], margin: Float, width: Int, height: 
         y1: clamp((high.y + margin).rounded(.up), height))
 }
 
-/// A soft rasteriser built only from MLX array operations, so MLX can differentiate
-/// the image with respect to control points and colours. Used for fitting only; results
-/// shown to the user are drawn from the vectors.
+/// A soft rasteriser built from MLX array operations, so MLX can differentiate the image
+/// with respect to control points and colours. The one part that is not array operations
+/// is the search for each pixel's nearest edge (`EdgeSearch`), which has no derivative.
+/// Used for fitting only; results shown to the user are drawn from the vectors.
 ///
 /// Each shape is rasterised over a window of pixels around it, not the whole picture, and
 /// shapes with windows of the same size are done together (see `WindowLayout`). The windows
@@ -213,10 +214,7 @@ public struct Rasterizer {
         let starts = matmul(basisStart, points)  // [n, E, 2]: where each edge starts
         let ends = matmul(basisEnd, points)
         let edges = starts.dim(1)
-        let startX = starts[0..., 0..., 0]  // [n, E]
-        let startY = starts[0..., 0..., 1]
-        let endX = ends[0..., 0..., 0]
-        let endY = ends[0..., 0..., 1]
+        let endPoints = concatenated([starts, ends], axis: -1)  // [n, E, 4]
         let x =
             MLXArray(batch.originsX.map { Float($0) }, [count, 1, 1])
             + MLXArray((0..<batch.width).map { Float($0) + 0.5 }, [1, 1, batch.width])  // [n, 1, w]
@@ -226,44 +224,8 @@ public struct Rasterizer {
 
         // The costly part, every pixel against every edge, only has to find which edge is
         // nearest and whether the pixel is inside. Neither answer has a derivative, so
-        // this is done on copies of the edges that carry none: nothing here is
-        // revisited when the derivative is taken.
-        func fixed(_ values: MLXArray) -> MLXArray {
-            stopGradient(values).reshaped(count, 1, 1, edges)
-        }
-        let ax = fixed(startX)
-        let ay = fixed(startY)
-        let bx = fixed(endX)
-        let by = fixed(endY)
-        let pixelX = x.expandedDimensions(axis: -1)  // [n, 1, w, 1]
-        let pixelY = y.expandedDimensions(axis: -1)  // [n, h, 1, 1]
-        let dx = bx - ax
-        let dy = by - ay
-        let relX = pixelX - ax  // [n, 1, w, E]
-        let relY = pixelY - ay  // [n, h, 1, E]
-        let t = clip((relX * dx + relY * dy) / (dx * dx + dy * dy + 1e-8), min: 0, max: 1)
-        let offX = relX - t * dx
-        let offY = relY - t * dy
-        let squared = offX * offX + offY * offY  // [n, h, w, E]
-        // Which edge is nearest to each pixel, as a table of 0s and 1s. Where edges are
-        // equally near, as two are all around the corner they share, the first one counts.
-        // (Two plain minimums: MLX's own "index of the least" is several times slower.)
-        let order = MLXArray(Int32(0)..<Int32(edges))
-        let rank = which(
-            squared .== squared.min(axis: -1, keepDims: true), order, MLXArray(Int32(edges)))
-        let isNearest = (rank .== rank.min(axis: -1, keepDims: true)).asType(.float32)
-
-        // Non-zero inside test: a ray toward +x counts each edge it crosses as +1 or -1 by
-        // the edge's direction; the pixel is inside if these do not cancel. A shape that
-        // overlaps itself is therefore solid there, not cut out.
-        let straddles = (ay .> pixelY) .!= (by .> pixelY)
-        let safeDy = which(straddles, dy, MLXArray(Float(1)))
-        let crossX = ax + (pixelY - ay) / safeDy * dx
-        let direction = which(by .> ay, MLXArray(Int32(1)), MLXArray(Int32(-1)))
-        let winding = which(
-            logicalAnd(straddles, pixelX .< crossX), direction, MLXArray(Int32(0))
-        ).sum(axis: -1)
-        let sign = which(winding .!= MLXArray(Int32(0)), MLXArray(Float(1)), MLXArray(Float(-1)))
+        // nothing of it is revisited when the derivative is taken.
+        let (isNearest, sign) = EdgeSearch.nearest(edges: endPoints, batch: batch)
 
         // The distance to that one nearest edge again, this time with its derivative. It
         // is the same number, and the same derivative, as the least distance over all the
@@ -275,7 +237,6 @@ public struct Rasterizer {
         // two fits of the same photo to drift apart. The product is taken one window row
         // at a time because MLX is slow at one product spanning a whole large window.
         let rows = count * batch.height
-        let endPoints = concatenated([starts, ends], axis: -1)  // [n, E, 4]
         let perRow = broadcast(
             endPoints.expandedDimensions(axis: 1), to: [count, batch.height, edges, 4]
         ).reshaped(rows, edges, 4)
