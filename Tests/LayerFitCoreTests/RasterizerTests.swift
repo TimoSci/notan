@@ -153,6 +153,29 @@ final class RasterizerTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(far.min().item(Float.self), 10)
     }
 
+    /// The fitter renders each shape alone over its own rectangle; that must give the same
+    /// picture as rendering them together over one shared rectangle.
+    func testFittingChunkWithCropsMatchesSharedRectangle() {
+        let shapes = fiveShapes()
+        let points = pointsArray(shapes)
+        let colors = colorsArray(shapes)
+        let background = colorArray(black)
+        let crops = shapes.map { cropRect(points: $0.points, margin: 12, width: 64, height: 64) }
+        func render(chunk: Int) -> (image: MLXArray, boundaryDistance: MLXArray) {
+            Rasterizer(width: 64, height: 64, softness: 0.5, chunk: chunk).render(
+                points: points, colors: colors, background: background, crops: crops)
+        }
+        let alone = render(chunk: Fitter.fittingChunk)
+        let together = render(chunk: shapes.count)
+        XCTAssertLessThan(abs(alone.image - together.image).max().item(Float.self), 1e-4)
+        // A shape's edge is not measured outside its own rectangle, so distances only have
+        // to agree where they are within the margin.
+        let near = together.boundaryDistance .< 10
+        let gap = which(
+            near, abs(alone.boundaryDistance - together.boundaryDistance), MLXArray(Float(0)))
+        XCTAssertLessThan(gap.max().item(Float.self), 1e-3)
+    }
+
     func testOffscreenShapeWithCropsIsSkipped() {
         let outside = Shape.circle(center: SIMD2(-50, -50), radius: 5, color: white)
         let rasterizer = Rasterizer(width: 32, height: 32)

@@ -61,8 +61,11 @@ public struct Fitter {
     public static let measuringSoftness: Float = 0.25
     /// How many bytes of freed buffers MLX may keep for reuse while fitting.
     public static let bufferCacheLimit = 16 << 30
-    /// Shapes rendered together while fitting.
-    public static let fittingChunk = 8
+    /// Shapes rendered together while fitting. Shapes in a chunk share one rectangle that
+    /// encloses all of them, so each shape is rendered alone, over its own tight rectangle:
+    /// with 8 to a chunk the shared rectangle covered about half the picture at 128 shapes
+    /// while each shape needed about 6% of it, and the fit took twice as long.
+    public static let fittingChunk = 1
 
     public init(
         target: TargetImage, settings: FitSettings, loss: LossConfig = .init(),
@@ -92,7 +95,6 @@ public struct Fitter {
         let pointRate = 1.0 * scale
         let colorRate: Float = 0.01
 
-        // Small chunks keep each chunk's crop rectangle tight around its shapes.
         let rasterizer = Rasterizer(
             width: width, height: height, softness: loss.softness, chunk: Fitter.fittingChunk)
         // Beyond this distance a shape's soft edge and its boundary weight are both nil.
