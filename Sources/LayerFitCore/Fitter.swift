@@ -61,11 +61,6 @@ public struct Fitter {
     public static let measuringSoftness: Float = 0.25
     /// How many bytes of freed buffers MLX may keep for reuse while fitting.
     public static let bufferCacheLimit = 16 << 30
-    /// Shapes rendered together while fitting. Shapes in a chunk share one rectangle that
-    /// encloses all of them, so each shape is rendered alone, over its own tight rectangle:
-    /// with 8 to a chunk the shared rectangle covered about half the picture at 128 shapes
-    /// while each shape needed about 6% of it, and the fit took twice as long.
-    public static let fittingChunk = 1
 
     public init(
         target: TargetImage, settings: FitSettings, loss: LossConfig = .init(),
@@ -84,8 +79,9 @@ public struct Fitter {
     public func run(progress: (FitProgress) -> Void, isCancelled: () -> Bool) -> [Level] {
         let width = target.width
         let height = target.height
-        // Crop rectangles change every step, so freed buffers rarely fit the next request.
-        // Without a limit MLX keeps them all and the process footprint grows without bound.
+        // Shapes move between window sizes as they are fitted, so the buffers a step frees
+        // often do not fit the next step's requests. Without a limit MLX keeps them all and
+        // the process footprint grows without bound.
         Memory.cacheLimit = Fitter.bufferCacheLimit
         // LIVE's rates and reach are for ~256 px pictures; scale them with ours.
         let scale = Float(max(width, height)) / 256
@@ -95,8 +91,7 @@ public struct Fitter {
         let pointRate = 1.0 * scale
         let colorRate: Float = 0.01
 
-        let rasterizer = Rasterizer(
-            width: width, height: height, softness: loss.softness, chunk: Fitter.fittingChunk)
+        let rasterizer = Rasterizer(width: width, height: height, softness: loss.softness)
         // Beyond this distance a shape's soft edge and its boundary weight are both nil.
         let cropMargin = max(16 * loss.softness, lossConfig.boundaryReach) + 1
         // A level's reported error is measured with near-hard edges, like the vectors the

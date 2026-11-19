@@ -68,6 +68,18 @@ final class FitterTests: XCTestCase {
         }
     }
 
+    /// The same picture and settings give exactly the same result every time. This is easy
+    /// to lose on a GPU: an operation that adds things up in no fixed order rounds
+    /// differently from run to run, and a fit magnifies that into visibly different shapes.
+    func testSameFitTwiceGivesTheSamePicture() {
+        for mode in [LevelMode.refit, .prefix] {
+            let first = fit(twoDiscs(), shapes: 8, mode: mode)
+            let second = fit(twoDiscs(), shapes: 8, mode: mode)
+            XCTAssertEqual(first.map(\.picture), second.map(\.picture), "\(mode)")
+            XCTAssertEqual(first.map(\.mse), second.map(\.mse), "\(mode)")
+        }
+    }
+
     func testPrefixErrorStillFalls() {
         let levels = fit(twoDiscs(), shapes: 4, mode: .prefix)
         XCTAssertLessThan(levels.last!.mse, levels[0].mse * 0.5)
