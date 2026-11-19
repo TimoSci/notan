@@ -96,6 +96,17 @@ public struct ContentView: View {
                     "Re-fit: every level is re-optimised as a whole. Prefix: each level is exactly the first shapes of the next."
                 )
                 .disabled(model.isRefining)
+                Toggle(
+                    "Carry refinements",
+                    isOn: Binding(
+                        get: { model.settings.mode == .prefix || model.carryRefinements },
+                        set: { model.carryRefinements = $0 })
+                )
+                .toggleStyle(.checkbox)
+                .disabled(model.settings.mode == .prefix || model.isRefining)
+                .help(
+                    "Show a refinement on every level, not only the one it was made on. Prefix always does this, exactly, because a shape is the same on every level. In Re-fit the shapes move between levels, so a carried refinement goes on the shape with the same number and may not line up."
+                )
                 Divider().frame(height: 16)
                 Text(model.selectionLabel)
                     .foregroundStyle(model.selection == nil ? .secondary : .primary)

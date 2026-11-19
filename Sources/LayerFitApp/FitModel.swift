@@ -80,6 +80,13 @@ public final class FitModel {
             if oldValue.mode != settings.mode, !isRefining { selection = nil }
         }
     }
+    /// In Re-fit mode, whether a refinement made on one level is also shown on the other
+    /// levels, on the shape with the same number. Re-fit moves every shape between levels,
+    /// so a carried refinement is clipped to an outline it was not fitted for. Prefix mode
+    /// always shares refinements, exactly, because there a shape is the same on every level.
+    public var carryRefinements = false {
+        didSet { if oldValue != carryRefinements, !isRefining { selection = nil } }
+    }
     /// The region the Level slider and Refine act on; nil is the whole picture.
     public private(set) var selection: NodeID?
     /// True while a refinement inside a shape is running (as opposed to a whole-picture fit).
@@ -94,6 +101,16 @@ public final class FitModel {
     /// True while the picture should track the fit; false once the user picks a level.
     public private(set) var followsLatest = true
     public var errorMessage: String?
+
+    /// Refinements are kept beside the levels, not inside them, so that one refinement can
+    /// be shown on several levels.
+    private struct Refinement {
+        /// The picture-level region it belongs to: a shape's number, or nil for the background.
+        var rootShape: Int?
+        var madeAtLevel: Int
+        var inner: Inner
+    }
+    private var refinements: [LevelMode: [Refinement]] = [:]
 
     private var stop = 0
     /// How many layers of refinement to show; nil shows them all.
@@ -138,7 +155,82 @@ public final class FitModel {
     /// The slider position, kept within the levels that exist for the viewed mode.
     public var shownStop: Int { max(0, min(stop, levels.count - 1)) }
 
-    public var shownLevel: Level? { levels.isEmpty ? nil : levels[shownStop] }
+    /// The level at the slider's position, with the refinements that apply to it.
+    public var shownLevel: Level? {
+        guard !levels.isEmpty else { return nil }
+        var level = levels[shownStop]
+        attachRefinements(to: &level.picture, mode: settings.mode, level: shownStop)
+        return level
+    }
+
+    // MARK: Refinements across levels
+
+    /// Whether refinements of this mode appear on levels other than the one they were made on.
+    private func shares(_ mode: LevelMode) -> Bool { mode == .prefix || carryRefinements }
+
+    /// The index in `refinements[mode]` of the refinement shown for a picture-level region
+    /// on a level: the one made on that level, else (when shared) the one made nearest it.
+    private func refinementIndex(rootShape: Int?, mode: LevelMode, level: Int) -> Int? {
+        let all = refinements[mode] ?? []
+        let candidates = all.indices.filter { all[$0].rootShape == rootShape }
+        if let exact = candidates.first(where: { all[$0].madeAtLevel == level }) { return exact }
+        guard shares(mode) else { return nil }
+        return candidates.min {
+            let a = abs(all[$0].madeAtLevel - level)
+            let b = abs(all[$1].madeAtLevel - level)
+            return a != b ? a < b : all[$0].madeAtLevel < all[$1].madeAtLevel
+        }
+    }
+
+    private func attachRefinements(to picture: inout LayerFitCore.Picture, mode: LevelMode, level: Int) {
+        guard let all = refinements[mode], !all.isEmpty else { return }
+        if let index = refinementIndex(rootShape: nil, mode: mode, level: level) {
+            picture.backgroundInner = all[index].inner
+        }
+        for shape in picture.shapes.indices {
+            if let index = refinementIndex(rootShape: shape, mode: mode, level: level) {
+                picture.shapes[shape].inner = all[index].inner
+            }
+        }
+    }
+
+    /// Sets the refinement of a region of the picture shown on `level`. For a picture-level
+    /// region this replaces (or creates) its refinement; deeper, it edits the refinement
+    /// that region lives in.
+    private func writeInner(_ inner: Inner, at node: NodeID, mode: LevelMode, level: Int) {
+        let rootShape: Int? = node.inBackground ? nil : node.path.first
+        let isRoot = node.inBackground ? node.path.isEmpty : node.path.count == 1
+        var all = refinements[mode] ?? []
+        defer { refinements[mode] = all }
+
+        if isRoot {
+            // In Prefix mode a region has one refinement whatever level it was made on;
+            // otherwise each level can have its own.
+            let existing =
+                mode == .prefix
+                ? all.firstIndex { $0.rootShape == rootShape }
+                : all.firstIndex { $0.rootShape == rootShape && $0.madeAtLevel == level }
+            if let existing {
+                all[existing].inner = inner
+            } else {
+                all.append(Refinement(rootShape: rootShape, madeAtLevel: level, inner: inner))
+            }
+            return
+        }
+        guard let index = refinementIndex(rootShape: rootShape, mode: mode, level: level) else {
+            return
+        }
+        // Edit inside the refinement by hanging it on a stand-in picture.
+        let placeholder = LayerFitCore.Shape.circle(
+            center: SIMD2(0, 0), radius: 1, color: RGB(r: 0, g: 0, b: 0))
+        var scratch = LayerFitCore.Picture(
+            width: 1, height: 1, background: RGB(r: 0, g: 0, b: 0),
+            shapes: [LayerFitCore.Shape(points: placeholder.points, color: placeholder.color, inner: all[index].inner)])
+        let below = node.inBackground ? node.path : Array(node.path.dropFirst())
+        guard scratch.setInner(inner, at: .shape([0] + below)), let edited = scratch.shapes[0].inner
+        else { return }
+        all[index].inner = edited
+    }
 
     public var shownPicture: LayerFitCore.Picture? {
         if isFitting, followsLatest, fittingMode == settings.mode, let livePicture {
@@ -265,6 +357,7 @@ public final class FitModel {
         photoURL = url
         photo = loaded
         results = [:]
+        refinements = [:]
         stop = 0
         followsLatest = true
         status = .idle
@@ -291,6 +384,7 @@ public final class FitModel {
         let runSettings = settings
         let stageCount = stageSchedule(totalShapes: runSettings.totalShapes).count
         results[mode] = []
+        refinements[mode] = []
         stop = 0
         followsLatest = true
         fittingMode = mode
@@ -370,8 +464,9 @@ public final class FitModel {
                 self.status = .fitting(stage: progress.stage, stageCount: progress.stageCount)
                 if let level = progress.finishedLevel {
                     finished.append(level)
-                    self.results[mode]?[rootStop].picture.setInner(
-                        Inner(levels: finished, shown: finished.count - 1), at: node)
+                    self.writeInner(
+                        Inner(levels: finished, shown: finished.count - 1), at: node, mode: mode,
+                        level: rootStop)
                 }
             }
             guard let self, self.generation == run else { return }
@@ -397,10 +492,7 @@ public final class FitModel {
             guard var inner = selectedInner, !inner.levels.isEmpty, levels.indices.contains(shownStop)
             else { return }
             inner.shown = max(0, min(newStop, inner.levels.count - 1))
-            // Read the position first: it depends on `results`, which is about to be modified.
-            let mode = settings.mode
-            let rootStop = shownStop
-            results[mode]?[rootStop].picture.setInner(inner, at: selection)
+            writeInner(inner, at: selection, mode: settings.mode, level: shownStop)
             return
         }
         stop = max(0, min(newStop, levels.count - 1))

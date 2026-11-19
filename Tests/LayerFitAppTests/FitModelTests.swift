@@ -97,9 +97,12 @@ final class FitModelTests: XCTestCase {
 
     /// A model with a finished 3-stage fit; level k has k circles, all at (4, 4), so a
     /// click there hits the last one.
-    func fittedModel(refine: @escaping RefineRunner = FitModelTests.instantRefiner()) async -> FitModel {
+    func fittedModel(
+        mode: LevelMode = .refit, refine: @escaping RefineRunner = FitModelTests.instantRefiner()
+    ) async -> FitModel {
         let model = makeModel(Self.instantRunner(stages: 3), refine: refine)
         model.open(photoURL)
+        model.settings.mode = mode
         model.start()
         await waitFor("done") { model.status == .done }
         return model
@@ -460,6 +463,176 @@ final class FitModelTests: XCTestCase {
         XCTAssertFalse(model.isRefining)
         XCTAssertEqual(model.maxDepth, 0)
         XCTAssertTrue(model.errorMessage?.contains("hidden") ?? false)
+    }
+
+    // MARK: Refinements across levels
+
+    /// Goes to a root level, clicks the centre (hitting that level's last shape) and refines.
+    func refineTopShape(_ model: FitModel, atLevel level: Int) async {
+        model.select(at: nil)
+        model.userMovedSlider(to: level)
+        model.select(at: centre)
+        model.refine()
+        await waitFor("refined at level \(level)") { model.status == .done && !model.isRefining && model.sliderLast >= 1 }
+        model.select(at: nil)
+    }
+
+    func refinedShapes(_ model: FitModel, atLevel level: Int) -> [Int] {
+        model.select(at: nil)
+        model.userMovedSlider(to: level)
+        guard let picture = model.shownPicture else { return [] }
+        return picture.shapes.indices.filter { picture.shapes[$0].inner != nil }
+    }
+
+    func testPrefixRefinementsShowAtEveryLevelThatHasTheShape() async {
+        let model = await fittedModel(mode: .prefix)
+        await refineTopShape(model, atLevel: 2)  // shape 2 of 2 (index 1)
+        await refineTopShape(model, atLevel: 3)  // shape 3 of 3 (index 2)
+        XCTAssertEqual(refinedShapes(model, atLevel: 3), [1, 2])
+        XCTAssertEqual(refinedShapes(model, atLevel: 2), [1])
+        XCTAssertEqual(refinedShapes(model, atLevel: 1), [])
+        model.userMovedSlider(to: 3)
+        XCTAssertEqual(model.maxDepth, 1)
+        XCTAssertEqual(model.shownPicture?.shapeCount(maxDepth: .max), 3 + 2 + 2)
+    }
+
+    func testPrefixRefinementIsOneObjectSharedByAllLevels() async {
+        let model = await fittedModel(mode: .prefix)
+        await refineTopShape(model, atLevel: 2)
+        // Scrub the refinement while looking at level 3 …
+        model.userMovedSlider(to: 3)
+        model.select(at: centre)  // shape 3 is on top there
+        XCTAssertEqual(model.selection, .shape([2]))
+        model.select(at: nil)
+        model.userMovedSlider(to: 2)
+        model.select(at: centre)
+        model.selectParent()
+        XCTAssertEqual(model.selection, .shape([1]))
+        model.userMovedSlider(to: 1)
+        model.select(at: nil)
+        // … and it is at that position on every level.
+        model.userMovedSlider(to: 3)
+        XCTAssertEqual(model.shownPicture?.inner(at: .shape([1]))?.shownIndex, 1)
+    }
+
+    func testPrefixRefiningAgainReplacesWhateverLevelItWasMadeOn() async {
+        var runs = 0
+        let model = await fittedModel(mode: .prefix) { url, picture, node, settings, progress, isCancelled in
+            runs += 1
+            return try Self.instantRefiner(stages: runs == 1 ? 2 : 1)(
+                url, picture, node, settings, progress, isCancelled)
+        }
+        await refineTopShape(model, atLevel: 2)
+        model.userMovedSlider(to: 3)
+        // Shape index 1 is under shape index 2 at level 3; reach it through its child.
+        model.setDepth(1)
+        XCTAssertEqual(model.shownPicture?.inner(at: .shape([1]))?.levels.count, 3)
+        model.userMovedSlider(to: 2)
+        model.select(at: centre)
+        model.selectParent()
+        model.refine()
+        await waitFor("second") { runs == 2 && model.status == .done }
+        XCTAssertEqual(model.shownPicture?.inner(at: .shape([1]))?.levels.count, 2)
+        model.select(at: nil)
+        model.userMovedSlider(to: 3)
+        XCTAssertEqual(model.shownPicture?.inner(at: .shape([1]))?.levels.count, 2)
+    }
+
+    func testPrefixNestedRefinementIsSharedToo() async {
+        let model = await fittedModel(mode: .prefix)
+        await refineTopShape(model, atLevel: 2)
+        model.userMovedSlider(to: 2)
+        model.select(at: centre)
+        XCTAssertEqual(model.selection, .shape([1, 1]))
+        model.refine()
+        await waitFor("nested") { model.status == .done && model.maxDepth == 2 }
+        model.select(at: nil)
+        model.userMovedSlider(to: 3)
+        XCTAssertEqual(model.maxDepth, 2)
+        XCTAssertNotNil(model.shownPicture?.inner(at: .shape([1, 1])))
+    }
+
+    func testPrefixBackgroundRefinementIsShared() async {
+        let model = await fittedModel(mode: .prefix)
+        model.userMovedSlider(to: 1)
+        model.select(at: corner)
+        model.refine()
+        await waitFor("refined") { model.status == .done && model.sliderLast == 2 }
+        model.select(at: nil)
+        model.userMovedSlider(to: 3)
+        XCTAssertEqual(model.shownPicture?.backgroundInner?.levels.count, 3)
+    }
+
+    func testRefitRefinementsStayOnTheirLevelUnlessCarried() async {
+        let model = await fittedModel()
+        XCTAssertFalse(model.carryRefinements)
+        await refineTopShape(model, atLevel: 2)
+        XCTAssertEqual(refinedShapes(model, atLevel: 2), [1])
+        XCTAssertEqual(refinedShapes(model, atLevel: 3), [])
+
+        model.carryRefinements = true
+        XCTAssertEqual(refinedShapes(model, atLevel: 3), [1])
+        XCTAssertEqual(refinedShapes(model, atLevel: 2), [1])
+        XCTAssertEqual(refinedShapes(model, atLevel: 1), [])  // level 1 has no shape 2
+
+        model.carryRefinements = false
+        XCTAssertEqual(refinedShapes(model, atLevel: 3), [])
+    }
+
+    func testRefitCarryShowsBothRefinementsMadeOnDifferentLevels() async {
+        let model = await fittedModel()
+        model.carryRefinements = true
+        await refineTopShape(model, atLevel: 2)
+        await refineTopShape(model, atLevel: 3)
+        XCTAssertEqual(refinedShapes(model, atLevel: 3), [1, 2])
+        XCTAssertEqual(refinedShapes(model, atLevel: 2), [1])
+    }
+
+    func testRefitCarryPrefersTheRefinementMadeNearestTheLevelShown() async {
+        var runs = 0
+        let model = await fittedModel { url, picture, node, settings, progress, isCancelled in
+            runs += 1
+            return try Self.instantRefiner(stages: runs == 1 ? 2 : 1)(
+                url, picture, node, settings, progress, isCancelled)
+        }
+        model.carryRefinements = true
+        // The background exists on every level: refine it on level 1 (three levels) and
+        // again on level 2 (two levels).
+        for level in [1, 2] {
+            model.select(at: nil)
+            model.userMovedSlider(to: level)
+            model.select(at: corner)
+            model.refine()
+            await waitFor("refined on \(level)") { runs == level && model.status == .done }
+        }
+        func backgroundLevels(at level: Int) -> Int? {
+            model.select(at: nil)
+            model.userMovedSlider(to: level)
+            return model.shownPicture?.backgroundInner?.levels.count
+        }
+        XCTAssertEqual(backgroundLevels(at: 1), 3)  // its own
+        XCTAssertEqual(backgroundLevels(at: 2), 2)  // its own, not the one carried from level 1
+        XCTAssertEqual(backgroundLevels(at: 3), 2)  // nearest: made on level 2
+        XCTAssertEqual(backgroundLevels(at: 0), 3)  // nearest: made on level 1
+        model.carryRefinements = false
+        XCTAssertNil(backgroundLevels(at: 3))
+        XCTAssertEqual(backgroundLevels(at: 1), 3)
+    }
+
+    func testChangingCarryClearsTheSelection() async {
+        let model = await fittedModel()
+        model.select(at: centre)
+        model.carryRefinements = true
+        XCTAssertNil(model.selection)
+    }
+
+    func testStartDiscardsThatModesRefinements() async {
+        let model = await fittedModel(mode: .prefix)
+        await refineTopShape(model, atLevel: 2)
+        model.start()
+        await waitFor("refit") { model.status == .done }
+        XCTAssertEqual(refinedShapes(model, atLevel: 3), [])
+        XCTAssertEqual(refinedShapes(model, atLevel: 2), [])
     }
 
     // MARK: The two sliders
