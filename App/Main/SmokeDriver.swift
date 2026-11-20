@@ -1,17 +1,17 @@
 #if DEBUG
     import AppKit
-    import LayerFitCore
-    import LayerFitUI
+    import NotanCore
+    import NotanUI
 
-    /// Debug builds only. When LAYERFIT_SMOKE_DIR and LAYERFIT_SMOKE_PHOTO are set, drives
+    /// Debug builds only. When NOTAN_SMOKE_DIR and NOTAN_SMOKE_PHOTO are set, drives
     /// the real window through a fit and writes snapshots of it and a log to that folder,
     /// then quits. For checking the app where the screen cannot be captured from outside.
     @MainActor
     enum SmokeDriver {
         static func runIfRequested(_ model: FitModel) async {
             let environment = ProcessInfo.processInfo.environment
-            guard let directory = environment["LAYERFIT_SMOKE_DIR"],
-                let photo = environment["LAYERFIT_SMOKE_PHOTO"]
+            guard let directory = environment["NOTAN_SMOKE_DIR"],
+                let photo = environment["NOTAN_SMOKE_PHOTO"]
             else { return }
             let folder = URL(fileURLWithPath: directory, isDirectory: true)
             try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -60,7 +60,7 @@
             snapshot("2-opened")
 
             model.settings.totalShapes = 32
-            model.settings.gradients = environment["LAYERFIT_SMOKE_GRADIENTS"] != nil
+            model.settings.gradients = environment["NOTAN_SMOKE_GRADIENTS"] != nil
             model.start()
             await wait("refit: 4 levels") { model.levels.count >= 4 }
             if let window = NSApp.windows.first(where: { $0.isVisible }) {

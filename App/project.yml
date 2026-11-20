@@ -1,21 +1,21 @@
-name: LayerFit
+name: Notan
 options:
   deploymentTarget:
     macOS: "15.0"
 packages:
-  LayerFit:
+  Notan:
     path: ..
 targets:
-  LayerFit:
+  Notan:
     type: application
     platform: macOS
     sources: [Main]
     dependencies:
-      - package: LayerFit
-        product: LayerFitUI
+      - package: Notan
+        product: NotanUI
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: net.timosci.LayerFit
+        PRODUCT_BUNDLE_IDENTIFIER: net.timosci.Notan
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "5.0"
         CODE_SIGN_IDENTITY: "-"
