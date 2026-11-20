@@ -119,16 +119,16 @@ public struct ContentView: View {
                 )
                 Divider().frame(height: 16)
                 Text(model.selectionLabel)
-                    .foregroundStyle(model.selection == nil ? .secondary : .primary)
-                    .help("Click a shape, or a gap between shapes, to select it; click outside the picture or press Esc to select the whole picture again.")
+                    .foregroundStyle(model.selected.isEmpty ? .secondary : .primary)
+                    .help("Click a shape, or a gap between shapes, to select it; Shift-click to add one to the selection or take it out; click outside the picture or press Esc to select the whole picture again.")
                 Button("Parent") { model.selectParent() }
                     .disabled(model.selection == nil || model.isFitting)
-                    .help("Select the shape this one was fitted inside")
+                    .help("Select the shape this one was fitted inside. Needs exactly one shape selected.")
                 Spacer()
                 Button("Refine selection") { model.refine() }
                     .disabled(!model.canRefine)
                     .help(
-                        "Fit finer shapes only inside the selected shape, zoomed into that part of the photo, using the settings above"
+                        "Fit finer shapes only inside each selected shape, zoomed into that part of the photo, using the settings above. Several shapes are refined side by side."
                     )
                 // Return starts a fit, but must not restart one that is already running.
                 Button(model.isFitting ? "Restart" : "Start") { model.start() }
@@ -146,10 +146,10 @@ public struct ContentView: View {
             PictureView(
                 picture: model.shownPicture, original: original,
                 showsOriginal: holdingOriginal || (model.shownPicture == nil && original != nil),
-                maxDepth: model.shownDepth, selectedShape: model.selectedShape,
-                backgroundSelected: model.selection?.isBackground ?? false,
-                selectedGapMask: model.selectedGapMask,
-                onClick: { model.select(at: $0) })
+                maxDepth: model.shownDepth, selectedShapes: model.selectedShapes,
+                backgroundSelected: model.backgroundSelected,
+                selectedGapMasks: model.selectedGapMasks,
+                onClick: { model.select(at: $0, toggling: $1) })
             if model.photoURL == nil {
                 Text("Drop a photo here")
                     .font(.title2)
@@ -164,18 +164,19 @@ public struct ContentView: View {
     private var stopLabel: String {
         guard !model.levels.isEmpty else { return "" }
         // While the whole picture is being fitted, count against the stages still to come.
-        if model.selection == nil, !model.isRefining, case .fitting(_, let stageCount) = model.status {
+        if model.selected.isEmpty, !model.isRefining, case .fitting(_, let stageCount) = model.status {
             return "\(model.sliderStop) of \(stageCount)"
         }
+        if model.selected.count > 1 { return "" }
         return "\(model.sliderStop) of \(model.sliderLast)"
     }
 
     private var levelBar: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
-                Text(model.selection == nil ? "Level" : "Level in selection")
+                Text(model.selected.isEmpty ? "Level" : "Level in selection")
                     .frame(minWidth: 116, alignment: .leading)
-                    .help("Steps through the levels of the selected shape, or of the whole picture when nothing is selected")
+                    .help("Steps through the levels of the selected shape, or of the whole picture when nothing is selected. With several shapes selected it is off.")
                 Slider(
                     value: Binding(
                         get: { Double(model.sliderStop) },
@@ -240,7 +241,7 @@ public struct ContentView: View {
                 // Esc goes back to the whole picture.
                 Button("") { model.select(at: nil) }
                     .keyboardShortcut(.cancelAction)
-                    .disabled(model.selection == nil)
+                    .disabled(model.selected.isEmpty)
             }
             .opacity(0)
         }

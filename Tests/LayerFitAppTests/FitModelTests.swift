@@ -465,6 +465,192 @@ final class FitModelTests: XCTestCase {
         XCTAssertTrue(model.errorMessage?.contains("hidden") ?? false)
     }
 
+    // MARK: Several regions at once
+
+    /// A finished one-stage fit whose level 1 has `count` circles side by side, the i-th
+    /// under `spot(i)`, with background between them.
+    func spreadModel(
+        _ count: Int, refine: @escaping RefineRunner = FitModelTests.instantRefiner()
+    ) async -> FitModel {
+        let runner: FitRunner = { _, _, progress, _ in
+            let empty = LayerFitCore.Picture(
+                width: 4 * count, height: 4, background: RGB(r: 0, g: 0, b: 0), shapes: [])
+            var full = empty
+            full.shapes = (0..<count).map {
+                LayerFitCore.Shape.circle(
+                    center: SIMD2(Float(4 * $0) + 2, 2), radius: 1, color: RGB(r: 1, g: 0, b: 0))
+            }
+            let levels = [Level(picture: empty, mse: 0.2), Level(picture: full, mse: 0.1)]
+            for (stage, level) in levels.enumerated() {
+                progress(
+                    FitProgress(
+                        stage: stage, stageCount: 1, step: 10, stepCount: 10, picture: level.picture,
+                        finishedLevel: level))
+            }
+            return levels
+        }
+        let model = makeModel(runner, refine: refine)
+        model.open(photoURL)
+        model.start()
+        await waitFor("done") { model.status == .done }
+        return model
+    }
+
+    func spot(_ index: Int) -> SIMD2<Float> { SIMD2(Float(4 * index) + 2, 2) }
+    let between = SIMD2<Float>(4, 0.2)
+
+    func testShiftClickAddsAShapeAndTakesItOutAgain() async {
+        let model = await spreadModel(3)
+        model.select(at: spot(0), toggling: true)  // with nothing selected it simply selects
+        XCTAssertEqual(model.selected, [.shape([0])])
+        XCTAssertEqual(model.selection, .shape([0]))
+        model.select(at: spot(2), toggling: true)
+        XCTAssertEqual(model.selected, [.shape([0]), .shape([2])])
+        XCTAssertNil(model.selection)  // there is no one selected region
+        XCTAssertEqual(model.selectionLabel, "2 shapes selected")
+        XCTAssertEqual(model.selectedShapes.count, 2)
+        model.select(at: spot(0), toggling: true)
+        XCTAssertEqual(model.selected, [.shape([2])])
+        XCTAssertEqual(model.selection, .shape([2]))
+        XCTAssertEqual(model.selectionLabel, "Shape 3")
+    }
+
+    func testPlainClickReplacesSeveralAndShiftClickOutsideKeepsThem() async {
+        let model = await spreadModel(3)
+        model.select(at: spot(0))
+        model.select(at: spot(1), toggling: true)
+        model.select(at: nil, toggling: true)
+        XCTAssertEqual(model.selected.count, 2)
+        model.select(at: spot(2))
+        XCTAssertEqual(model.selected, [.shape([2])])
+        model.select(at: spot(1), toggling: true)
+        model.select(at: nil)
+        XCTAssertTrue(model.selected.isEmpty)
+    }
+
+    func testAShapeAndAGapCanBeSelectedTogether() async {
+        let model = await spreadModel(2)
+        model.select(at: spot(0))
+        model.select(at: between, toggling: true)
+        XCTAssertEqual(model.selected, [.shape([0]), .background])
+        XCTAssertEqual(model.selectionLabel, "2 regions selected")
+        XCTAssertEqual(model.selectedShapes.count, 1)
+        XCTAssertTrue(model.backgroundSelected)
+    }
+
+    /// The Level slider and Parent act on one region, so with several they do nothing.
+    func testLevelSliderAndParentNeedExactlyOneRegion() async {
+        let model = await spreadModel(2)
+        model.select(at: spot(0))
+        model.select(at: spot(1), toggling: true)
+        XCTAssertEqual(model.sliderLast, 0)
+        model.userMovedSlider(to: 0)
+        XCTAssertEqual(model.shownStop, 1)  // the picture's own level did not move
+        model.selectParent()
+        XCTAssertEqual(model.selected.count, 2)
+    }
+
+    /// A refinement of a shape replaces everything inside it, so a shape and something
+    /// inside it cannot both be selected: the newly clicked one stays.
+    func testAShapeAndSomethingInsideItAreNotSelectedTogether() async {
+        let model = await fittedModel()
+        model.select(at: centre)
+        model.refine()
+        await waitFor("refined") { model.status == .done && model.maxDepth == 1 }
+        model.setDepth(0)
+        model.select(at: centre)
+        XCTAssertEqual(model.selected, [.shape([2])])
+        model.setDepth(1)
+        model.select(at: centre, toggling: true)
+        XCTAssertEqual(model.selected, [.shape([2, 1])])
+        // Hiding the depth some of the selected regions live at deselects those.
+        model.select(at: corner, toggling: true)
+        model.setDepth(0)
+        XCTAssertEqual(model.selected, [.background])
+    }
+
+    func testRefineRefinesEverySelectedRegion() async {
+        let model = await spreadModel(3)
+        model.select(at: spot(0))
+        model.select(at: spot(2), toggling: true)
+        XCTAssertTrue(model.canRefine)
+        model.refine()
+        await waitFor("refined") { model.status == .done && model.maxDepth == 1 }
+        let picture = model.shownPicture
+        XCTAssertEqual(picture?.inner(at: .shape([0]))?.levels.count, 3)
+        XCTAssertNil(picture?.inner(at: .shape([1])))
+        XCTAssertEqual(picture?.inner(at: .shape([2]))?.levels.count, 3)
+        XCTAssertEqual(model.selected, [.shape([0]), .shape([2])])
+    }
+
+    /// Counts how many refinements are running at the same moment.
+    final class Tally: @unchecked Sendable {
+        private let lock = NSLock()
+        private var running = 0
+        private(set) var most = 0
+        private(set) var nodes: [NodeID] = []
+
+        func enter(_ node: NodeID) {
+            lock.lock()
+            running += 1
+            most = max(most, running)
+            nodes.append(node)
+            lock.unlock()
+        }
+
+        func leave() {
+            lock.lock()
+            running -= 1
+            lock.unlock()
+        }
+    }
+
+    func testRefinementsRunSideBySideUpToTheLimit() async {
+        let tally = Tally()
+        let count = FitModel.refinementsAtOnce + 2
+        let model = await spreadModel(count) { url, picture, node, settings, progress, isCancelled in
+            tally.enter(node)
+            Thread.sleep(forTimeInterval: 0.05)
+            defer { tally.leave() }
+            return try Self.instantRefiner()(url, picture, node, settings, progress, isCancelled)
+        }
+        for index in 0..<count { model.select(at: spot(index), toggling: true) }
+        model.refine()
+        await waitFor("refined") { model.status == .done && tally.nodes.count == count }
+        XCTAssertEqual(tally.most, FitModel.refinementsAtOnce)
+        XCTAssertEqual(Set(tally.nodes), Set((0..<count).map { NodeID.shape([$0]) }))
+        for index in 0..<count {
+            XCTAssertEqual(model.shownPicture?.inner(at: .shape([index]))?.levels.count, 3)
+        }
+    }
+
+    /// Progress counts the stages of all the refinements together.
+    func testProgressAndCancelCoverAllRefinements() async {
+        let model = await spreadModel(2, refine: Self.hangingRefiner())
+        model.select(at: spot(0))
+        model.select(at: spot(1), toggling: true)
+        model.refine()
+        await waitFor("both at stage 2") { model.status == .fitting(stage: 4, stageCount: 6) }
+        model.cancel()
+        await waitFor("cancelled") { model.status == .cancelled }
+        XCTAssertEqual(model.shownPicture?.inner(at: .shape([0]))?.levels.count, 2)
+        XCTAssertEqual(model.shownPicture?.inner(at: .shape([1]))?.levels.count, 2)
+    }
+
+    func testOneFailedRefinementIsReportedAndTheOthersFinish() async {
+        let model = await spreadModel(2) { url, picture, node, settings, progress, isCancelled in
+            if node == .shape([0]) { throw RefineError.regionNotVisible }
+            return try Self.instantRefiner()(url, picture, node, settings, progress, isCancelled)
+        }
+        model.select(at: spot(0))
+        model.select(at: spot(1), toggling: true)
+        model.refine()
+        await waitFor("error") { model.errorMessage != nil && !model.isRefining }
+        XCTAssertEqual(model.status, .done)
+        XCTAssertNil(model.shownPicture?.inner(at: .shape([0])))
+        XCTAssertEqual(model.shownPicture?.inner(at: .shape([1]))?.levels.count, 3)
+    }
+
     // MARK: Refinements across levels
 
     /// Goes to a root level, clicks the centre (hitting that level's last shape) and refines.
