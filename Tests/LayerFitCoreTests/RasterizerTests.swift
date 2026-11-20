@@ -8,10 +8,10 @@ final class RasterizerTests: XCTestCase {
     let red = RGB(r: 1, g: 0, b: 0)
     let blue = RGB(r: 0, g: 0, b: 1)
 
-    func render(_ shapes: [LayerFitCore.Shape], background: RGB, size: Int = 64, chunk: Int = 32)
+    func render(_ shapes: [LayerFitCore.Shape], background: RGB, size: Int = 64)
         -> (image: MLXArray, boundaryDistance: MLXArray)
     {
-        let rasterizer = Rasterizer(width: size, height: size, chunk: chunk)
+        let rasterizer = Rasterizer(width: size, height: size)
         return rasterizer.render(
             points: pointsArray(shapes), colors: colorsArray(shapes),
             background: colorArray(background))
@@ -99,20 +99,6 @@ final class RasterizerTests: XCTestCase {
         XCTAssertTrue(image.asArray(Float.self).allSatisfy { $0.isFinite })
     }
 
-    func testChunkingMatchesUnchunked() {
-        let shapes = (0..<5).map { i in
-            Shape.circle(
-                center: SIMD2(12 + Float(i) * 9, 20 + Float(i) * 5), radius: 8,
-                color: RGB(r: Float(i) / 5, g: 0.5, b: 1 - Float(i) / 5))
-        }
-        let whole = render(shapes, background: black, chunk: 32)
-        let chunked = render(shapes, background: black, chunk: 2)
-        let imageDiff = abs(whole.image - chunked.image).max().item(Float.self)
-        let distanceDiff = abs(whole.boundaryDistance - chunked.boundaryDistance).max().item(Float.self)
-        XCTAssertLessThan(imageDiff, 1e-5)
-        XCTAssertLessThan(distanceDiff, 1e-4)
-    }
-
     func fiveShapes() -> [LayerFitCore.Shape] {
         (0..<5).map { i in
             Shape.circle(
@@ -136,7 +122,7 @@ final class RasterizerTests: XCTestCase {
 
     func testCroppedRenderMatchesFull() {
         let shapes = fiveShapes()
-        let rasterizer = Rasterizer(width: 64, height: 64, softness: 0.5, chunk: 2)
+        let rasterizer = Rasterizer(width: 64, height: 64, softness: 0.5)
         let points = pointsArray(shapes)
         let colors = colorsArray(shapes)
         let background = colorArray(black)

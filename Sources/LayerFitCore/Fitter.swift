@@ -79,9 +79,9 @@ public struct Fitter {
     public func run(progress: (FitProgress) -> Void, isCancelled: () -> Bool) -> [Level] {
         let width = target.width
         let height = target.height
-        // Shapes move between window sizes as they are fitted, so the buffers a step frees
-        // often do not fit the next step's requests. Without a limit MLX keeps them all and
-        // the process footprint grows without bound.
+        // The shapes' windows change size as the shapes are fitted, so the buffers a step
+        // frees often do not fit the next step's requests. Without a limit MLX keeps them
+        // all and the process footprint grows without bound.
         Memory.cacheLimit = Fitter.bufferCacheLimit
         // LIVE's rates and reach are for ~256 px pictures; scale them with ours.
         let scale = Float(max(width, height)) / 256
@@ -273,7 +273,7 @@ public struct Fitter {
             for step in 1...max(settings.stepsPerStage, 1) {
                 if isCancelled() { return levels }
                 updateCrops()
-                let (_, gradients) = lossAndGradient(parameters)
+                let (_, gradients) = onOneStream { lossAndGradient(parameters) }
                 parameters = adam.step(parameters: parameters, gradients: gradients)
                 for index in colorParameters {
                     parameters[index] = clip(parameters[index], min: 0, max: 1)

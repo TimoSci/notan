@@ -20,8 +20,10 @@ slider through the levels of compression and judge by eye.
   Ma et al., CVPR 2022): shapes are added in stages, each new shape starts
   where the picture is currently most wrong, and shapes are refined by
   gradient descent through a differentiable rasteriser.
-- Runs on the GPU through MLX Swift, using MLX's automatic differentiation.
-  No hand-written gradients. Adam is a small struct of our own on MLX
+- Runs on the GPU through MLX Swift, using MLX's automatic differentiation
+  for everything but the rasteriser. The rasteriser's gradient was at first
+  automatic too; it is now written by hand, for speed (see "Differentiable
+  rasteriser"). Adam is a small struct of our own on MLX
   arrays, because MLX's optimiser is built around neural-network modules
   and we need per-parameter learning rates and a frozen subset.
 - Each level shows its shape count and an approximate size in bytes, so
@@ -144,7 +146,7 @@ error pixel.
 
 ### Differentiable rasteriser
 
-Written entirely as MLX array operations so MLX can differentiate it:
+What it computes:
 
 1. Sample each Bézier segment at a fixed number of parameter values to get
    a closed polygon per shape. This is linear in the control points.
@@ -157,11 +159,14 @@ Written entirely as MLX array operations so MLX can differentiate it:
 4. Composite back to front over the background:
    `C = C·(1 − a) + colour·a`.
 
-One part of step 2 is not array operations: finding which edge is nearest to
-each pixel, and the sign, is a small Metal program run through MLX, because
-as array operations it took most of the fitting time. Its two answers carry
-no gradient, so there are still no hand-written gradients; the distance to
-the edge it finds is then worked out with array operations.
+This was first written entirely as MLX array operations, so that MLX could
+differentiate it, and hand-written gradients were ruled out as bug-prone.
+It turned out to take nearly all of the fitting time, so steps 2 to 4 are
+now a few small Metal programs run through MLX, with their gradient written
+by hand; only step 1 is still array operations. To keep the hand-written
+gradient honest, the tests hold the first version's arithmetic as a plain
+reference, differentiated automatically, and compare picture and gradient
+against it shape by shape.
 
 The builder must keep memory in check at 256 shapes and 512 px, for example
 by processing shapes in chunks. 512 GB of unified memory is available, but

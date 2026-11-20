@@ -70,11 +70,11 @@ final class RasterEquivalenceTests: XCTestCase {
     /// Renders the shapes with the rasteriser and with the reference, and checks that the
     /// pictures, the edge distances and the derivatives of a loss agree.
     func check(
-        _ shapes: [LayerFitCore.Shape], cropped: Bool, chunk: Int = 32, fills: Bool = false,
+        _ shapes: [LayerFitCore.Shape], cropped: Bool, fills: Bool = false,
         masked: Bool = false, layered: Bool = false, file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        let rasterizer = Rasterizer(width: width, height: height, softness: softness, chunk: chunk)
+        let rasterizer = Rasterizer(width: width, height: height, softness: softness)
         let reference = ReferenceRaster(width: width, height: height, softness: softness)
         let crops =
             cropped
@@ -160,11 +160,6 @@ final class RasterEquivalenceTests: XCTestCase {
         check(scene(), cropped: true)
     }
 
-    func testSmallBatchesMatchReference() {
-        check(scene(), cropped: true, chunk: 1)
-        check(scene(), cropped: false, chunk: 2)
-    }
-
     func testGradientFillsMatchReference() {
         check(scene(), cropped: true, fills: true)
         check(scene(), cropped: false, fills: true)
@@ -181,6 +176,45 @@ final class RasterEquivalenceTests: XCTestCase {
             blob(40 + Float($0) * 4, 32, radius: 26 - Float($0) * 2, seed: UInt32(20 + $0))
         }
         check(shapes, cropped: true, fills: true)
+    }
+
+    /// The picture the shapes are painted over shows through wherever they do not cover,
+    /// so the loss has a derivative by it too.
+    func testDerivativeByThePictureBeneathMatchesReference() {
+        let shapes = scene()
+        let rasterizer = Rasterizer(width: width, height: height, softness: softness)
+        let reference = ReferenceRaster(width: width, height: height, softness: softness)
+        let crops = shapes.map {
+            cropRect(points: $0.points, margin: margin, width: width, height: height)
+        }
+        let skipped = Set(crops.indices.filter { crops[$0].isEmpty })
+        let background = colorArray(RGB(r: 0.3, g: 0.4, b: 0.5))
+        let target = pattern({ x, y, c in 0.5 + 0.5 * sin(0.13 * x + 0.07 * y + c) }, channels: 3)
+        let beneath = pattern({ x, y, c in 0.5 + 0.4 * cos(0.05 * x - 0.11 * y + 2 * c) }, channels: 3)
+        let far = MLXArray.zeros([height, width]) + Rasterizer.noBoundary
+        let points = pointsArray(shapes)
+        let colors = colorsArray(shapes)
+        let fills = gradientArrays(shapes)
+
+        let real = valueAndGrad { (arrays: [MLXArray]) -> [MLXArray] in
+            [
+                self.loss(
+                    rasterizer.render(
+                        points: points, colors: colors, background: background, crops: crops,
+                        over: (arrays[0], far), gradients: fills), target: target)
+            ]
+        }([beneath]).1[0]
+        let plain = valueAndGrad { (arrays: [MLXArray]) -> [MLXArray] in
+            [
+                self.loss(
+                    reference.render(
+                        points: points, colors: colors, background: background, skipping: skipped,
+                        over: (arrays[0], far), gradients: fills), target: target)
+            ]
+        }([beneath]).1[0]
+        let scale = abs(plain).max().item(Float.self)
+        XCTAssertGreaterThan(scale, 1e-3)
+        XCTAssertLessThan(abs(real - plain).max().item(Float.self), 1e-4 * scale)
     }
 
     /// One shape, so one window and nothing to put in order.
