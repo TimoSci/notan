@@ -80,13 +80,6 @@ public final class FitModel {
             if oldValue.mode != settings.mode, !isRefining { selection = nil }
         }
     }
-    /// In Re-fit mode, whether a refinement made on one level is also shown on the other
-    /// levels, on the shape with the same number. Re-fit moves every shape between levels,
-    /// so a carried refinement is clipped to an outline it was not fitted for. Prefix mode
-    /// always shares refinements, exactly, because there a shape is the same on every level.
-    public var carryRefinements = false {
-        didSet { if oldValue != carryRefinements, !isRefining { selection = nil } }
-    }
     /// The regions Refine acts on, in the order they were selected; none is the whole
     /// picture. No two of them lie one inside the other.
     public private(set) var selected: [NodeID] = []
@@ -116,9 +109,13 @@ public final class FitModel {
     /// Refinements are kept beside the levels, not inside them, so that one refinement can
     /// be shown on several levels.
     private struct Refinement {
+        /// Stays the same for as long as the refinement exists; names it in the tree.
+        let id: Int
         var root: Root
         var madeAtLevel: Int
         var inner: Inner
+        /// A locked area is painted on top of every later level, as it was on its own.
+        var isLocked = true
     }
     /// The picture-level region a refinement belongs to, by number.
     private enum Root: Equatable {
@@ -133,8 +130,16 @@ public final class FitModel {
             if case .gap = self { return true }
             return false
         }
+
+        var node: NodeID {
+            switch self {
+            case .shape(let index): return .shape([index])
+            case .gap(let index): return .gap(index)
+            }
+        }
     }
     private var refinements: [LevelMode: [Refinement]] = [:]
+    private var nextRefinementID = 0
 
     private var stop = 0
     /// How many layers of refinement to show; nil shows them all.
@@ -189,21 +194,35 @@ public final class FitModel {
 
     // MARK: Refinements across levels
 
-    /// Whether refinements of this mode appear on levels other than the one they were made on.
-    private func shares(_ mode: LevelMode) -> Bool { mode == .prefix || carryRefinements }
-
-    /// The index in `refinements[mode]` of the refinement shown for a picture-level region
-    /// on a level: the one made on that level, else (when shared) the one made nearest it.
-    private func refinementIndex(root: Root, mode: LevelMode, level: Int) -> Int? {
+    /// The index in `refinements[mode]` of the refinement shown inside one of a level's own
+    /// regions: the one made on that level. In Prefix mode a shape is the same on every
+    /// level, so there an unlocked refinement of it is shown on all of them.
+    private func ownIndex(root: Root, mode: LevelMode, level: Int) -> Int? {
         let all = refinements[mode] ?? []
-        let candidates = all.indices.filter { all[$0].root == root }
-        if let exact = candidates.first(where: { all[$0].madeAtLevel == level }) { return exact }
-        // Gaps are different patches on every level, so their refinements never travel.
-        guard shares(mode), !root.isGap else { return nil }
-        return candidates.min {
-            let a = abs(all[$0].madeAtLevel - level)
-            let b = abs(all[$1].madeAtLevel - level)
-            return a != b ? a < b : all[$0].madeAtLevel < all[$1].madeAtLevel
+        if let exact = all.firstIndex(where: { $0.root == root && $0.madeAtLevel == level }) {
+            return exact
+        }
+        guard mode == .prefix, !root.isGap else { return nil }
+        return all.firstIndex { $0.root == root && !$0.isLocked }
+    }
+
+    /// The locked areas painted on top of a level, in painting order, each with the index
+    /// of its refinement: those made on earlier levels. The earliest is painted last, so
+    /// that where two overlap, the one locked first is the one that shows.
+    private func lockedAreas(mode: LevelMode, level: Int) -> [(index: Int, area: LockedArea)] {
+        let all = refinements[mode] ?? []
+        let levels = results[mode] ?? []
+        let above = all.indices
+            .filter {
+                all[$0].isLocked && all[$0].madeAtLevel < level
+                    && levels.indices.contains(all[$0].madeAtLevel)
+            }
+            .sorted { (all[$0].madeAtLevel, $0) > (all[$1].madeAtLevel, $1) }
+        return above.compactMap { index in
+            var source = levels[all[index].madeAtLevel].picture
+            let node = all[index].root.node
+            guard source.setInner(all[index].inner, at: node) else { return nil }
+            return (index, LockedArea(picture: source, node: node))
         }
     }
 
@@ -211,28 +230,54 @@ public final class FitModel {
         guard let all = refinements[mode], !all.isEmpty else { return }
         // A picture whose gaps are not told apart still has gap 0: the whole uncovered area.
         for gap in 0..<max(picture.gaps.count, 1) {
-            if let index = refinementIndex(root: .gap(gap), mode: mode, level: level) {
+            if let index = ownIndex(root: .gap(gap), mode: mode, level: level) {
                 picture.setInner(all[index].inner, at: .gap(gap))
             }
         }
         for shape in picture.shapes.indices {
-            if let index = refinementIndex(root: .shape(shape), mode: mode, level: level) {
+            if let index = ownIndex(root: .shape(shape), mode: mode, level: level) {
                 picture.shapes[shape].inner = all[index].inner
             }
         }
+        picture.locked = lockedAreas(mode: mode, level: level).map(\.area)
     }
 
-    /// Sets the refinement of a region of the picture shown on `level`. For a picture-level
-    /// region this replaces (or creates) its refinement; deeper, it edits the refinement
-    /// that region lives in.
+    /// `inner` with the refinement of the shape at `path` below it replaced by `replacement`.
+    private static func edited(_ inner: Inner, below path: [Int], with replacement: Inner) -> Inner? {
+        // Edit inside the refinement by hanging it on a stand-in picture.
+        let placeholder = LayerFitCore.Shape.circle(
+            center: SIMD2(0, 0), radius: 1, color: RGB(r: 0, g: 0, b: 0))
+        var scratch = LayerFitCore.Picture(
+            width: 1, height: 1, background: RGB(r: 0, g: 0, b: 0),
+            shapes: [LayerFitCore.Shape(points: placeholder.points, color: placeholder.color, inner: inner)])
+        guard scratch.setInner(replacement, at: .shape([0] + path)) else { return nil }
+        return scratch.shapes[0].inner
+    }
+
+    /// Sets the refinement of a region of the picture shown on `level`. For one of the
+    /// level's own shapes or gaps this replaces (or creates) its refinement; for a locked
+    /// area, or anything deeper, it edits the refinement that region lives in.
     private func writeInner(_ inner: Inner, at node: NodeID, mode: LevelMode, level: Int) {
-        let root = Root(node)
-        let isRoot = node.inBackground ? node.path.isEmpty : node.path.count == 1
         var all = refinements[mode] ?? []
         defer { refinements[mode] = all }
+        let isRoot = node.inBackground ? node.path.isEmpty : node.path.count == 1
+        let below = node.inBackground ? node.path : Array(node.path.dropFirst())
 
+        if let number = node.locked {
+            let areas = lockedAreas(mode: mode, level: level)
+            guard areas.indices.contains(number) else { return }
+            let index = areas[number].index
+            if isRoot {
+                all[index].inner = inner
+            } else if let edited = FitModel.edited(all[index].inner, below: below, with: inner) {
+                all[index].inner = edited
+            }
+            return
+        }
+
+        let root = Root(node)
         if isRoot {
-            // In Prefix mode a region has one refinement whatever level it was made on;
+            // In Prefix mode a shape has one refinement whatever level it was made on;
             // otherwise each level can have its own.
             let existing =
                 mode == .prefix && !root.isGap
@@ -240,24 +285,97 @@ public final class FitModel {
                 : all.firstIndex { $0.root == root && $0.madeAtLevel == level }
             if let existing {
                 all[existing].inner = inner
+                all[existing].madeAtLevel = level
             } else {
-                all.append(Refinement(root: root, madeAtLevel: level, inner: inner))
+                all.append(Refinement(id: nextRefinementID, root: root, madeAtLevel: level, inner: inner))
+                nextRefinementID += 1
             }
             return
         }
-        guard let index = refinementIndex(root: root, mode: mode, level: level) else {
-            return
-        }
-        // Edit inside the refinement by hanging it on a stand-in picture.
-        let placeholder = LayerFitCore.Shape.circle(
-            center: SIMD2(0, 0), radius: 1, color: RGB(r: 0, g: 0, b: 0))
-        var scratch = LayerFitCore.Picture(
-            width: 1, height: 1, background: RGB(r: 0, g: 0, b: 0),
-            shapes: [LayerFitCore.Shape(points: placeholder.points, color: placeholder.color, inner: all[index].inner)])
-        let below = node.inBackground ? node.path : Array(node.path.dropFirst())
-        guard scratch.setInner(inner, at: .shape([0] + below)), let edited = scratch.shapes[0].inner
+        guard let index = ownIndex(root: root, mode: mode, level: level),
+            let edited = FitModel.edited(all[index].inner, below: below, with: inner)
         else { return }
         all[index].inner = edited
+    }
+
+    // MARK: The tree of refined areas
+
+    /// One row of the tree: a level, an area refined on it, or something refined inside
+    /// such an area.
+    public struct LockNode: Identifiable, Equatable, Sendable {
+        public enum Kind: Equatable, Sendable {
+            case level
+            case area
+            case inside
+        }
+
+        public var id: String
+        public var title: String
+        public var kind: Kind
+        /// Whether the area is locked; nil for rows that are not areas.
+        public var isLocked: Bool?
+        public var children: [LockNode]?
+
+        fileprivate var level = 0
+        fileprivate var refinement: Int?
+    }
+
+    /// The refined areas of the mode being viewed, grouped by the level they were made on.
+    public var lockTree: [LockNode] {
+        let mode = settings.mode
+        let all = refinements[mode] ?? []
+        let levels = results[mode] ?? []
+        func inside(_ shapes: [LayerFitCore.Shape], of title: String, id: String) -> [LockNode]? {
+            let rows = shapes.enumerated().compactMap { index, shape -> LockNode? in
+                guard let inner = shape.inner else { return nil }
+                let own = "\(title) › \(index + 1)"
+                return LockNode(
+                    id: "\(id)-\(index)", title: own, kind: .inside,
+                    children: inside(inner.shapes, of: own, id: "\(id)-\(index)"))
+            }
+            return rows.isEmpty ? nil : rows
+        }
+        return Set(all.map(\.madeAtLevel)).sorted().map { level in
+            let areas = all.filter { $0.madeAtLevel == level }.map { refinement -> LockNode in
+                let title: String
+                switch refinement.root {
+                case .shape(let index): title = "Shape \(index + 1)"
+                case .gap(let index):
+                    let gapCount = levels.indices.contains(level) ? levels[level].picture.gaps.count : 0
+                    title = gapCount > 1 ? "Gap \(index + 1)" : "Background"
+                }
+                let id = "area-\(refinement.id)"
+                return LockNode(
+                    id: id, title: title, kind: .area, isLocked: refinement.isLocked,
+                    children: inside(refinement.inner.shapes, of: title, id: id), level: level,
+                    refinement: refinement.id)
+            }
+            return LockNode(
+                id: "level-\(level)", title: "Level \(level)", kind: .level, children: areas,
+                level: level)
+        }
+    }
+
+    /// Locks or unlocks an area of the tree. The selection is dropped: the regions it
+    /// names may no longer be where they were.
+    public func setLocked(_ locked: Bool, area: LockNode) {
+        guard !isFitting, let id = area.refinement,
+            let index = refinements[settings.mode]?.firstIndex(where: { $0.id == id })
+        else { return }
+        refinements[settings.mode]?[index].isLocked = locked
+        selected = []
+    }
+
+    /// Goes to the level a row of the tree belongs to and, for an area, selects it.
+    public func show(area: LockNode) {
+        guard !isFitting, levels.indices.contains(area.level) else { return }
+        selected = []
+        stop = area.level
+        followsLatest = stop == levels.count - 1
+        guard let id = area.refinement,
+            let refinement = refinements[settings.mode]?.first(where: { $0.id == id })
+        else { return }
+        selected = [refinement.root.node]
     }
 
     public var shownPicture: LayerFitCore.Picture? {
@@ -332,14 +450,24 @@ public final class FitModel {
             return "\(selected.count) \(kind) selected"
         }
         guard let selection else { return "Whole picture" }
+        // A region of a locked area is named as in the picture of the level it is from.
+        var home = shownLevel?.picture
+        var suffix = ""
+        if let number = selection.locked {
+            let areas = lockedAreas(mode: settings.mode, level: shownStop)
+            guard areas.indices.contains(number) else { return "Whole picture" }
+            home = areas[number].area.picture
+            let level = refinements[settings.mode]?[areas[number].index].madeAtLevel ?? 0
+            suffix = ", locked on level \(level)"
+        }
         let steps = selection.path.map { "\($0 + 1)" }.joined(separator: " › ")
         if selection.inBackground {
             // With one gap there is nothing to tell apart: it is simply the background.
-            let gapCount = shownLevel?.picture.gaps.count ?? 0
+            let gapCount = home?.gaps.count ?? 0
             let name = gapCount > 1 ? "Gap \(selection.gap + 1)" : "Background"
-            return steps.isEmpty ? name : "\(name) › \(steps)"
+            return (steps.isEmpty ? name : "\(name) › \(steps)") + suffix
         }
-        return "Shape \(steps)"
+        return "Shape \(steps)" + suffix
     }
 
     /// Selects what is under a click, given in picture coordinates; nil (a click outside
@@ -368,8 +496,7 @@ public final class FitModel {
 
     /// Whether `node` was fitted somewhere inside `other`.
     private static func lies(_ node: NodeID, inside other: NodeID) -> Bool {
-        node.inBackground == other.inBackground && node.gap == other.gap
-            && node.path.count > other.path.count && node.path.starts(with: other.path)
+        node != other && other.contains(node)
     }
 
     /// Moves the selection to the region the selected shape was fitted inside, or to the

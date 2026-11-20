@@ -20,6 +20,13 @@ public struct RefinePlan: Equatable, Sendable {
 public func refinePlan(
     picture: Picture, node: NodeID, originalPixelSize: CGSize, workingSize: Int
 ) -> RefinePlan? {
+    // A region of a locked area is measured in that area's own picture.
+    if let index = node.locked {
+        guard picture.locked.indices.contains(index) else { return nil }
+        return refinePlan(
+            picture: picture.locked[index].picture, node: node.inLocked(nil),
+            originalPixelSize: originalPixelSize, workingSize: workingSize)
+    }
     let whole = CGRect(x: 0, y: 0, width: picture.width, height: picture.height)
     var viewport = whole
     if node.isBackground {
@@ -125,7 +132,8 @@ public struct Refiner {
         // the gap, so they are scored over every gap in view: straying into a neighbouring
         // gap then counts against them.
         var scored = mask
-        if node.isBackground {
+        // (A locked gap is drawn clipped to where it showed, so it is scored there only.)
+        if node.isBackground, node.locked == nil {
             let all = renderRegion(
                 picture, region: viewport, width: plan.width, height: plan.height,
                 style: .backgroundMask)

@@ -670,76 +670,106 @@ final class FitModelTests: XCTestCase {
         return picture.shapes.indices.filter { picture.shapes[$0].inner != nil }
     }
 
-    func testPrefixRefinementsShowAtEveryLevelThatHasTheShape() async {
-        let model = await fittedModel(mode: .prefix)
-        await refineTopShape(model, atLevel: 2)  // shape 2 of 2 (index 1)
-        await refineTopShape(model, atLevel: 3)  // shape 3 of 3 (index 2)
-        XCTAssertEqual(refinedShapes(model, atLevel: 3), [1, 2])
-        XCTAssertEqual(refinedShapes(model, atLevel: 2), [1])
-        XCTAssertEqual(refinedShapes(model, atLevel: 1), [])
-        model.userMovedSlider(to: 3)
-        XCTAssertEqual(model.maxDepth, 1)
-        XCTAssertEqual(model.shownPicture?.shapeCount(maxDepth: .max), 3 + 2 + 2)
+    // A refined area is locked by default: on every later level it is painted on top, as
+    // it was on the level it was refined on.
+
+    func testARefinedAreaStaysOnTopOnLaterLevels() async {
+        for mode in [LevelMode.refit, .prefix] {
+            let model = await fittedModel(mode: mode)
+            await refineTopShape(model, atLevel: 2)  // shape 2 of 2 (index 1)
+            // On its own level it is simply the refined shape.
+            model.userMovedSlider(to: 2)
+            XCTAssertEqual(model.shownPicture?.locked.count, 0, "\(mode)")
+            XCTAssertEqual(refinedShapes(model, atLevel: 2), [1], "\(mode)")
+            // On a later level it is a locked area on top; the level's own shapes are bare.
+            XCTAssertEqual(refinedShapes(model, atLevel: 3), [], "\(mode)")
+            let later = model.shownPicture
+            XCTAssertEqual(later?.locked.count, 1, "\(mode)")
+            XCTAssertEqual(later?.locked.first?.node, .shape([1]), "\(mode)")
+            XCTAssertEqual(later?.locked.first?.picture.shapes.count, 2, "\(mode)")
+            XCTAssertEqual(later?.locked.first?.picture.inner(at: .shape([1]))?.levels.count, 3)
+            XCTAssertEqual(model.maxDepth, 1, "\(mode)")
+            XCTAssertEqual(later?.shapeCount(maxDepth: .max), 3 + 1 + 2, "\(mode)")
+            // On earlier levels it does not appear at all.
+            XCTAssertEqual(refinedShapes(model, atLevel: 1), [], "\(mode)")
+            XCTAssertEqual(model.shownPicture?.locked.count, 0, "\(mode)")
+        }
     }
 
-    func testPrefixRefinementIsOneObjectSharedByAllLevels() async {
-        let model = await fittedModel(mode: .prefix)
+    func testClickingALockedAreaSelectsItAndSaysWhichLevelItIsFrom() async {
+        let model = await fittedModel()
         await refineTopShape(model, atLevel: 2)
-        // Scrub the refinement while looking at level 3 …
         model.userMovedSlider(to: 3)
-        model.select(at: centre)  // shape 3 is on top there
-        XCTAssertEqual(model.selection, .shape([2]))
-        model.select(at: nil)
-        model.userMovedSlider(to: 2)
+        model.select(at: centre)
+        XCTAssertEqual(model.selection, NodeID.shape([1, 1]).inLocked(0))
+        XCTAssertEqual(model.selectionLabel, "Shape 2 › 2, locked on level 2")
+        model.selectParent()
+        XCTAssertEqual(model.selection, NodeID.shape([1]).inLocked(0))
+        XCTAssertEqual(model.selectionLabel, "Shape 2, locked on level 2")
+        XCTAssertNotNil(model.selectedShape)
+        model.selectParent()
+        XCTAssertNil(model.selection)
+    }
+
+    /// A locked area seen from a later level is the same refinement as on its own level.
+    func testScrubbingALockedAreaFromALaterLevelChangesItEverywhere() async {
+        let model = await fittedModel()
+        await refineTopShape(model, atLevel: 2)
+        model.userMovedSlider(to: 3)
         model.select(at: centre)
         model.selectParent()
-        XCTAssertEqual(model.selection, .shape([1]))
+        XCTAssertEqual(model.sliderLast, 2)
         model.userMovedSlider(to: 1)
+        XCTAssertEqual(model.sliderStop, 1)
+        XCTAssertEqual(model.shownStop, 3)
+        XCTAssertEqual(model.shownPicture?.locked.first?.picture.inner(at: .shape([1]))?.shownIndex, 1)
         model.select(at: nil)
-        // … and it is at that position on every level.
-        model.userMovedSlider(to: 3)
+        model.userMovedSlider(to: 2)
         XCTAssertEqual(model.shownPicture?.inner(at: .shape([1]))?.shownIndex, 1)
     }
 
-    func testPrefixRefiningAgainReplacesWhateverLevelItWasMadeOn() async {
-        var runs = 0
-        let model = await fittedModel(mode: .prefix) { url, picture, node, settings, progress, isCancelled in
-            runs += 1
-            return try Self.instantRefiner(stages: runs == 1 ? 2 : 1)(
+    func testRefiningALockedAreaFromALaterLevelReplacesItsRefinement() async {
+        var seen: [(picture: LayerFitCore.Picture, node: NodeID)] = []
+        let model = await fittedModel { url, picture, node, settings, progress, isCancelled in
+            seen.append((picture, node))
+            return try Self.instantRefiner(stages: seen.count == 1 ? 2 : 1)(
                 url, picture, node, settings, progress, isCancelled)
         }
         await refineTopShape(model, atLevel: 2)
         model.userMovedSlider(to: 3)
-        // Shape index 1 is under shape index 2 at level 3; reach it through its child.
-        model.setDepth(1)
-        XCTAssertEqual(model.shownPicture?.inner(at: .shape([1]))?.levels.count, 3)
-        model.userMovedSlider(to: 2)
         model.select(at: centre)
         model.selectParent()
         model.refine()
-        await waitFor("second") { runs == 2 && model.status == .done }
-        XCTAssertEqual(model.shownPicture?.inner(at: .shape([1]))?.levels.count, 2)
+        await waitFor("second") { seen.count == 2 && model.status == .done }
+        // The refiner is given the level as shown, and the region within its locked area.
+        XCTAssertEqual(seen[1].node, NodeID.shape([1]).inLocked(0))
+        XCTAssertEqual(seen[1].picture.shapes.count, 3)
+        XCTAssertEqual(seen[1].picture.locked.count, 1)
+        XCTAssertEqual(model.shownPicture?.locked.first?.picture.inner(at: .shape([1]))?.levels.count, 2)
+        // Still one area, still made on level 2.
         model.select(at: nil)
-        model.userMovedSlider(to: 3)
+        model.userMovedSlider(to: 2)
         XCTAssertEqual(model.shownPicture?.inner(at: .shape([1]))?.levels.count, 2)
+        XCTAssertEqual(model.lockTree.map(\.title), ["Level 2"])
+        XCTAssertEqual(model.lockTree.first?.children?.count, 1)
     }
 
-    func testPrefixNestedRefinementIsSharedToo() async {
-        let model = await fittedModel(mode: .prefix)
+    func testRefiningInsideALockedAreaFromALaterLevel() async {
+        let model = await fittedModel()
         await refineTopShape(model, atLevel: 2)
-        model.userMovedSlider(to: 2)
+        model.userMovedSlider(to: 3)
         model.select(at: centre)
-        XCTAssertEqual(model.selection, .shape([1, 1]))
+        XCTAssertEqual(model.selection, NodeID.shape([1, 1]).inLocked(0))
         model.refine()
         await waitFor("nested") { model.status == .done && model.maxDepth == 2 }
+        XCTAssertNotNil(model.shownPicture?.inner(at: NodeID.shape([1, 1]).inLocked(0)))
         model.select(at: nil)
-        model.userMovedSlider(to: 3)
+        model.userMovedSlider(to: 2)
         XCTAssertEqual(model.maxDepth, 2)
         XCTAssertNotNil(model.shownPicture?.inner(at: .shape([1, 1])))
     }
 
-    func testGapRefinementsStayOnTheirLevelEvenWhenShared() async {
-        // Gaps are different patches on every level, so their refinements never travel.
+    func testALockedGapStaysOnTopToo() async {
         let model = await fittedModel(mode: .prefix)
         model.userMovedSlider(to: 1)
         model.select(at: corner)
@@ -749,33 +779,110 @@ final class FitModelTests: XCTestCase {
         XCTAssertEqual(model.shownPicture?.backgroundInner?.levels.count, 3)
         model.userMovedSlider(to: 3)
         XCTAssertNil(model.shownPicture?.backgroundInner)
-        model.userMovedSlider(to: 1)
-        XCTAssertEqual(model.shownPicture?.backgroundInner?.levels.count, 3)
+        XCTAssertEqual(model.shownPicture?.locked.map(\.node), [.background])
+        XCTAssertEqual(model.shownPicture?.locked.first?.picture.shapes.count, 1)
+        model.userMovedSlider(to: 0)
+        XCTAssertEqual(model.shownPicture?.locked.count, 0)
     }
 
-    func testRefitRefinementsStayOnTheirLevelUnlessCarried() async {
+    // MARK: The tree of locked areas
+
+    func testTreeListsRefinedAreasByLevel() async {
         let model = await fittedModel()
-        XCTAssertFalse(model.carryRefinements)
-        await refineTopShape(model, atLevel: 2)
-        XCTAssertEqual(refinedShapes(model, atLevel: 2), [1])
-        XCTAssertEqual(refinedShapes(model, atLevel: 3), [])
-
-        model.carryRefinements = true
-        XCTAssertEqual(refinedShapes(model, atLevel: 3), [1])
-        XCTAssertEqual(refinedShapes(model, atLevel: 2), [1])
-        XCTAssertEqual(refinedShapes(model, atLevel: 1), [])  // level 1 has no shape 2
-
-        model.carryRefinements = false
-        XCTAssertEqual(refinedShapes(model, atLevel: 3), [])
-    }
-
-    func testRefitCarryShowsBothRefinementsMadeOnDifferentLevels() async {
-        let model = await fittedModel()
-        model.carryRefinements = true
-        await refineTopShape(model, atLevel: 2)
+        XCTAssertTrue(model.lockTree.isEmpty)
         await refineTopShape(model, atLevel: 3)
-        XCTAssertEqual(refinedShapes(model, atLevel: 3), [1, 2])
+        await refineTopShape(model, atLevel: 2)
+        model.userMovedSlider(to: 1)
+        model.select(at: corner)
+        model.refine()
+        await waitFor("background") { model.status == .done && model.lockTree.count == 3 }
+        model.select(at: nil)
+        let tree = model.lockTree
+        XCTAssertEqual(tree.map(\.title), ["Level 1", "Level 2", "Level 3"])
+        XCTAssertEqual(tree.map { $0.children?.map(\.title) ?? [] }, [["Background"], ["Shape 2"], ["Shape 3"]])
+        for level in tree {
+            XCTAssertEqual(level.kind, .level)
+            XCTAssertEqual(level.children?.first?.isLocked, true)
+        }
+        XCTAssertEqual(Set(tree.flatMap { [$0.id] + ($0.children ?? []).map(\.id) }).count, 6)
+    }
+
+    func testTreeShowsRefinementsInsideAnArea() async {
+        let model = await fittedModel()
+        await refineTopShape(model, atLevel: 2)
+        model.userMovedSlider(to: 2)
+        model.select(at: centre)  // the child on top inside shape 2
+        model.refine()
+        await waitFor("nested") { model.status == .done && model.maxDepth == 2 }
+        let area = model.lockTree.first?.children?.first
+        XCTAssertEqual(area?.title, "Shape 2")
+        XCTAssertEqual(area?.children?.map(\.title), ["Shape 2 › 2"])
+        XCTAssertEqual(area?.children?.first?.kind, .inside)
+        XCTAssertNil(area?.children?.first?.isLocked)
+    }
+
+    func testUnlockingAnAreaTakesItOffLaterLevels() async {
+        let model = await fittedModel()
+        await refineTopShape(model, atLevel: 2)
+        let area = model.lockTree[0].children![0]
+        model.userMovedSlider(to: 3)
+        model.select(at: centre)
+        model.setLocked(false, area: area)
+        XCTAssertTrue(model.selected.isEmpty)  // what was selected may no longer be there
+        XCTAssertEqual(model.lockTree[0].children?.first?.isLocked, false)
+        XCTAssertEqual(model.shownPicture?.locked.count, 0)
+        XCTAssertEqual(refinedShapes(model, atLevel: 3), [])
+        XCTAssertEqual(refinedShapes(model, atLevel: 2), [1])  // still there on its own level
+        model.setLocked(true, area: model.lockTree[0].children![0])
+        model.userMovedSlider(to: 3)
+        XCTAssertEqual(model.shownPicture?.locked.count, 1)
+    }
+
+    /// In Prefix a shape is the same on every level, so an unlocked refinement is still
+    /// shown inside it on every level that has the shape, under whatever is painted later.
+    func testUnlockedPrefixRefinementIsShownInsideItsShapeOnEveryLevel() async {
+        let model = await fittedModel(mode: .prefix)
+        await refineTopShape(model, atLevel: 2)
+        model.setLocked(false, area: model.lockTree[0].children![0])
+        XCTAssertEqual(refinedShapes(model, atLevel: 3), [1])
+        XCTAssertEqual(model.shownPicture?.locked.count, 0)
         XCTAssertEqual(refinedShapes(model, atLevel: 2), [1])
+        XCTAssertEqual(refinedShapes(model, atLevel: 1), [])
+    }
+
+    func testChoosingAnAreaInTheTreeGoesToItsLevelAndSelectsIt() async {
+        let model = await fittedModel()
+        await refineTopShape(model, atLevel: 2)
+        model.userMovedSlider(to: 3)
+        model.show(area: model.lockTree[0].children![0])
+        XCTAssertEqual(model.shownStop, 2)
+        XCTAssertEqual(model.selection, .shape([1]))
+        // A level heading goes to the level and selects nothing.
+        model.userMovedSlider(to: 1)
+        model.show(area: model.lockTree[0])
+        XCTAssertEqual(model.shownStop, 2)
+        XCTAssertNil(model.selection)
+    }
+
+    /// An earlier lock wins over a later one where they overlap, so the earlier is painted last.
+    func testEarlierLocksArePaintedOverLaterOnes() async {
+        let model = makeModel(Self.spreadRunner(stages: 4))
+        model.open(photoURL)
+        model.start()
+        await waitFor("done") { model.status == .done }
+        for (level, x) in [(3, Float(5.5)), (2, Float(1.5))] {
+            model.select(at: nil)
+            model.userMovedSlider(to: level)
+            model.select(at: SIMD2(x, 4))
+            model.refine()
+            await waitFor("refined on \(level)") { model.status == .done && !model.isRefining && model.sliderLast >= 1 }
+        }
+        model.select(at: nil)
+        model.userMovedSlider(to: 4)
+        XCTAssertEqual(model.shownPicture?.locked.map(\.node), [.shape([2]), .shape([0])])
+        XCTAssertEqual(model.shownPicture?.locked.map { $0.picture.shapes.count }, [3, 2])
+        model.userMovedSlider(to: 3)
+        XCTAssertEqual(model.shownPicture?.locked.map(\.node), [.shape([0])])
     }
 
     /// Level k has k small circles side by side, so each can be clicked on its own:
@@ -800,43 +907,6 @@ final class FitModelTests: XCTestCase {
             }
             return levels
         }
-    }
-
-    func testRefitCarryPrefersTheRefinementMadeNearestTheLevelShown() async {
-        var runs = 0
-        let model = makeModel(Self.spreadRunner(stages: 4)) { url, picture, node, settings, progress, isCancelled in
-            runs += 1
-            return try Self.instantRefiner(stages: runs == 1 ? 2 : 1)(
-                url, picture, node, settings, progress, isCancelled)
-        }
-        model.open(photoURL)
-        model.start()
-        await waitFor("done") { model.status == .done }
-        model.carryRefinements = true
-        // Refine the second shape on level 2 (three levels) and again on level 4 (two levels).
-        let second = SIMD2<Float>(3.5, 4)
-        for level in [2, 4] {
-            model.select(at: nil)
-            model.userMovedSlider(to: level)
-            model.select(at: second)
-            if model.selection != .shape([1]) { model.selectParent() }
-            XCTAssertEqual(model.selection, .shape([1]))
-            model.refine()
-            let expected = level == 2 ? 1 : 2
-            await waitFor("refined on \(level)") { runs == expected && model.status == .done }
-        }
-        func levelsOfSecondShape(at level: Int) -> Int? {
-            model.select(at: nil)
-            model.userMovedSlider(to: level)
-            return model.shownPicture?.inner(at: .shape([1]))?.levels.count
-        }
-        XCTAssertEqual(levelsOfSecondShape(at: 2), 3)  // its own
-        XCTAssertEqual(levelsOfSecondShape(at: 4), 2)  // its own, not the one carried from level 2
-        XCTAssertEqual(levelsOfSecondShape(at: 3), 3)  // equally near both: the earlier one
-        XCTAssertNil(levelsOfSecondShape(at: 1))  // level 1 has no second shape
-        model.carryRefinements = false
-        XCTAssertNil(levelsOfSecondShape(at: 3))
-        XCTAssertEqual(levelsOfSecondShape(at: 4), 2)
     }
 
     // MARK: Gaps
@@ -925,20 +995,15 @@ final class FitModelTests: XCTestCase {
         XCTAssertNil(model.shownPicture?.inner(at: .gap(0)))
     }
 
-    func testChangingCarryClearsTheSelection() async {
-        let model = await fittedModel()
-        model.select(at: centre)
-        model.carryRefinements = true
-        XCTAssertNil(model.selection)
-    }
-
     func testStartDiscardsThatModesRefinements() async {
         let model = await fittedModel(mode: .prefix)
         await refineTopShape(model, atLevel: 2)
         model.start()
         await waitFor("refit") { model.status == .done }
         XCTAssertEqual(refinedShapes(model, atLevel: 3), [])
+        XCTAssertEqual(model.shownPicture?.locked.count, 0)
         XCTAssertEqual(refinedShapes(model, atLevel: 2), [])
+        XCTAssertTrue(model.lockTree.isEmpty)
     }
 
     // MARK: The two sliders

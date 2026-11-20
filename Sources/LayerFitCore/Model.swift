@@ -96,16 +96,27 @@ public struct Inner: Equatable, Sendable {
 /// indices through the levels currently shown. `path[0]` indexes the picture's shapes (or
 /// the refinement of gap number `gap` when `inBackground`), `path[1]` that shape's
 /// children, and so on.
+///
+/// With `locked` set, the region is not one of the picture's own but lies in that locked
+/// area of it, and the rest names it within the locked area's picture.
 public struct NodeID: Hashable, Sendable {
     public var inBackground: Bool
     /// Which gap, when `inBackground`; otherwise 0.
     public var gap: Int
     public var path: [Int]
+    /// Which of the picture's locked areas the region lies in; nil for the picture itself.
+    public var locked: Int?
 
-    public init(inBackground: Bool, gap: Int = 0, path: [Int]) {
+    public init(inBackground: Bool, gap: Int = 0, path: [Int], locked: Int? = nil) {
         self.inBackground = inBackground
         self.gap = inBackground ? gap : 0
         self.path = path
+        self.locked = locked
+    }
+
+    /// The same region of the picture of locked area `index`; nil for a picture's own.
+    public func inLocked(_ index: Int?) -> NodeID {
+        NodeID(inBackground: inBackground, gap: gap, path: path, locked: index)
     }
 
     /// The whole uncovered area, for a picture whose gaps are not told apart. Same as gap 0.
@@ -121,19 +132,21 @@ public struct NodeID: Hashable, Sendable {
     public var isBackground: Bool { inBackground && path.isEmpty }
 
     public func child(_ index: Int) -> NodeID {
-        NodeID(inBackground: inBackground, gap: gap, path: path + [index])
+        NodeID(inBackground: inBackground, gap: gap, path: path + [index], locked: locked)
     }
 
     /// The region this one was fitted inside; nil for a gap and for the picture's own shapes.
     public var parent: NodeID? {
         guard !path.isEmpty else { return nil }
-        if path.count == 1 { return inBackground ? .gap(gap) : nil }
-        return NodeID(inBackground: inBackground, gap: gap, path: Array(path.dropLast()))
+        if path.count == 1 { return inBackground ? NodeID.gap(gap).inLocked(locked) : nil }
+        return NodeID(
+            inBackground: inBackground, gap: gap, path: Array(path.dropLast()), locked: locked)
     }
 
     /// True if `other` is this node or lies inside it.
     public func contains(_ other: NodeID) -> Bool {
-        inBackground == other.inBackground && gap == other.gap && other.path.starts(with: path)
+        locked == other.locked && inBackground == other.inBackground && gap == other.gap
+            && other.path.starts(with: path)
     }
 }
 
@@ -150,6 +163,27 @@ public struct Gap: Equatable, Sendable {
     }
 }
 
+/// A region of an earlier level's picture, kept as it was there and painted on top of a
+/// later level's picture: the part of `node` that showed in `picture`, with everything
+/// fitted inside it. `node` is one of `picture`'s own shapes or gaps.
+public struct LockedArea: Equatable, Sendable {
+    public var picture: Picture
+    public var node: NodeID
+
+    public init(picture: Picture, node: NodeID) {
+        self.picture = picture
+        self.node = node
+    }
+
+    /// The shapes this area adds to what is drawn: the locked shape itself, or what was
+    /// fitted in the locked gap. `depthUsed` is how many layers of refinement they are
+    /// below the picture's own shapes.
+    var drawn: (shapes: [Shape], depthUsed: Int) {
+        if node.isBackground { return (picture.inner(at: node)?.shapes ?? [], 1) }
+        return (picture.shape(at: node).map { [$0] } ?? [], 0)
+    }
+}
+
 /// A background colour plus shapes painted back to front, in working-image pixels.
 public struct Picture: Equatable, Sendable {
     public var width: Int
@@ -160,6 +194,8 @@ public struct Picture: Equatable, Sendable {
     /// each with its own colour. Empty, or out of step with the shapes, means the gaps are
     /// not told apart: the uncovered area is then one region in the background colour.
     public var gaps: [Gap]
+    /// Areas of earlier levels painted over everything else, in order.
+    public var locked: [LockedArea] = []
 
     public init(
         width: Int, height: Int, background: RGB, shapes: [Shape], backgroundInner: Inner? = nil,
@@ -208,12 +244,22 @@ public struct Picture: Equatable, Sendable {
                 }
             }
         }
+        for area in locked where maxDepth >= area.drawn.depthUsed {
+            total += Picture.count(area.drawn.shapes, depthLeft: maxDepth - area.drawn.depthUsed) {
+                $0.gradient != nil
+            }
+        }
         return total
     }
 
     /// How many layers of refinement are shown: 0 when no shape or gap has visible children.
     public var maxDepth: Int {
-        max(Picture.depth(of: shapes), gaps.map { Picture.innerDepth($0.inner) }.max() ?? 0)
+        let own = max(Picture.depth(of: shapes), gaps.map { Picture.innerDepth($0.inner) }.max() ?? 0)
+        let inLocked = locked.map { area -> Int in
+            let drawn = area.drawn
+            return drawn.shapes.isEmpty ? 0 : drawn.depthUsed + Picture.depth(of: drawn.shapes)
+        }
+        return max(own, inLocked.max() ?? 0)
     }
 
     /// The number of shapes drawn when refinements deeper than `maxDepth` are hidden.
@@ -223,6 +269,9 @@ public struct Picture: Equatable, Sendable {
             for gap in gaps {
                 total += Picture.count(gap.inner?.shapes ?? [], depthLeft: maxDepth - 1)
             }
+        }
+        for area in locked where maxDepth >= area.drawn.depthUsed {
+            total += Picture.count(area.drawn.shapes, depthLeft: maxDepth - area.drawn.depthUsed)
         }
         return total
     }
@@ -251,6 +300,10 @@ public struct Picture: Equatable, Sendable {
     /// The shape a node names, following the levels currently shown. Nil for the
     /// background or a path that no longer exists.
     public func shape(at node: NodeID) -> Shape? {
+        if let index = node.locked {
+            return locked.indices.contains(index)
+                ? locked[index].picture.shape(at: node.inLocked(nil)) : nil
+        }
         var list: [Shape]
         if node.inBackground {
             list = gaps.indices.contains(node.gap) ? (gaps[node.gap].inner?.shapes ?? []) : []
@@ -267,6 +320,10 @@ public struct Picture: Equatable, Sendable {
     }
 
     public func inner(at node: NodeID) -> Inner? {
+        if let index = node.locked {
+            return locked.indices.contains(index)
+                ? locked[index].picture.inner(at: node.inLocked(nil)) : nil
+        }
         if node.isBackground {
             return gaps.indices.contains(node.gap) ? gaps[node.gap].inner : nil
         }
@@ -276,6 +333,10 @@ public struct Picture: Equatable, Sendable {
     /// Replaces a region's refinement. Returns false if the node does not exist.
     @discardableResult
     public mutating func setInner(_ inner: Inner?, at node: NodeID) -> Bool {
+        if let index = node.locked {
+            guard locked.indices.contains(index) else { return false }
+            return locked[index].picture.setInner(inner, at: node.inLocked(nil))
+        }
         if node.isBackground {
             if gaps.indices.contains(node.gap) {
                 gaps[node.gap].inner = inner

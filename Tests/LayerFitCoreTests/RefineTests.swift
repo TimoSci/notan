@@ -274,6 +274,26 @@ final class RefineTests: XCTestCase {
         XCTAssertEqual(reports.last?.stageCount, 1)
     }
 
+    /// The same, but the red disc is a locked area on top of a later level whose own
+    /// shape, a black disc, would hide it.
+    func testRefinerWorksInsideALockedArea() throws {
+        var later = LayerFitCore.Picture(
+            width: 64, height: 64, background: .white,
+            shapes: [Shape.circle(center: SIMD2(32, 32), radius: 40, color: .black)])
+        later.locked = [LockedArea(picture: discPicture(), node: .shape([0]))]
+        let settings = FitSettings(totalShapes: 1, workingSize: 64, stepsPerStage: 80)
+        let levels = try Refiner(
+            photoURL: discPhoto(), picture: later, node: NodeID.shape([0]).inLocked(0),
+            settings: settings
+        ).run(progress: { _ in }, isCancelled: { false })
+        XCTAssertEqual(levels.map { $0.shapes.count }, [0, 1])
+        XCTAssertLessThan(levels[1].mse, levels[0].mse * 0.3)
+        let child = levels[1].shapes[0]
+        XCTAssertGreaterThan(child.color.b, 0.7)
+        XCTAssertEqual(centroid(child).x, 37.5, accuracy: 2)
+        XCTAssertEqual(centroid(child).y, 30, accuracy: 2)
+    }
+
     func testRefinerRefusesAHiddenShape() {
         var picture = discPicture()
         picture.shapes.append(Shape.circle(center: SIMD2(32, 32), radius: 40, color: .black))

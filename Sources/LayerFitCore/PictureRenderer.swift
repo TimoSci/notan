@@ -146,15 +146,102 @@ private struct Painter {
         for (index, shape) in picture.shapes.enumerated() {
             paint(shape, node: .shape([index]), in: context, depthLeft: maxDepth)
         }
+        for (index, area) in picture.locked.enumerated() {
+            paint(area, number: index, in: context, maxDepth: maxDepth)
+        }
     }
 
-    private func paint(_ shapes: [Shape], parent: NodeID, in context: CGContext, depthLeft: Int) {
+    /// Paints a locked area over what is there: the part of its region that showed in its
+    /// own picture, and nothing else.
+    private func paint(_ area: LockedArea, number: Int, in context: CGContext, maxDepth: Int) {
+        // Within the area, nodes are named as in its own picture.
+        let nowhere = NodeID.shape([-1])
+        let inside: Painter
+        switch style {
+        case .normal:
+            inside = Painter(style: .normal, omittingInnerOf: nil)
+        case .mask(let target):
+            // For a mask the area is black, hiding what is under it, unless the target
+            // lies in it.
+            inside = Painter(
+                style: .mask(of: target.locked == number ? target.inLocked(nil) : nowhere),
+                omittingInnerOf: nil)
+        case .backgroundMask:
+            inside = Painter(style: .mask(of: nowhere), omittingInnerOf: nil)
+        }
+        var painter = inside
+        if let omitted = omittingInnerOf, omitted.locked == number {
+            painter.omittingInnerOf = omitted.inLocked(nil)
+        }
+
+        let source = area.picture
+        let frame = CGRect(x: 0, y: 0, width: source.width, height: source.height)
+        let covering: ArraySlice<Shape>
+        context.saveGState()
+        context.beginTransparencyLayer(auxiliaryInfo: nil)
+        if area.node.isBackground {
+            // One gap among several is told from the others pixel by pixel; the blocky
+            // edge of that lies under the shapes, which are cut out again below.
+            let map = source.gaps.isEmpty ? nil : gapMap(of: source)
+            var color = source.background
+            // The clip to the gap's pixels ends before the shapes are cut out. Enlarged,
+            // its edge is soft, and a cut made through the same soft edge would leave a
+            // faint line of the gap's colour along it.
+            context.saveGState()
+            if let map, source.gapsMatch(map) {
+                guard source.gaps.indices.contains(area.node.gap),
+                    let mask = grayImage(
+                        map.nearestLabels.map { Int($0) == area.node.gap ? UInt8(255) : 0 },
+                        width: source.width, height: source.height)
+                else {
+                    context.restoreGState()
+                    context.endTransparencyLayer()
+                    context.restoreGState()
+                    return
+                }
+                color = source.gaps[area.node.gap].color
+                // Images, and so masks, are bottom-up; flipping twice leaves the
+                // coordinates as they were and the clip in place.
+                context.translateBy(x: 0, y: frame.height)
+                context.scaleBy(x: 1, y: -1)
+                context.clip(to: frame, mask: mask)
+                context.translateBy(x: 0, y: frame.height)
+                context.scaleBy(x: 1, y: -1)
+            }
+            context.setFillColor(painter.color(color, for: area.node))
+            context.fill(frame)
+            if maxDepth > 0, painter.descends(into: area.node),
+                let children = source.inner(at: area.node)?.shapes
+            {
+                painter.paint(children, parent: area.node, in: context, depthLeft: maxDepth - 1)
+            }
+            context.restoreGState()
+            covering = source.shapes[...]
+        } else if let root = area.node.path.first, source.shapes.indices.contains(root) {
+            painter.paint(source.shapes[root], node: .shape([root]), in: context, depthLeft: maxDepth)
+            covering = source.shapes[(root + 1)...]
+        } else {
+            covering = []
+        }
+        // Cut out what covered the region in its own picture.
+        context.setBlendMode(.destinationOut)
+        context.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1))
+        for shape in covering {
+            context.addPath(outline(of: shape))
+            context.fillPath(using: .winding)
+        }
+        context.setBlendMode(.normal)
+        context.endTransparencyLayer()
+        context.restoreGState()
+    }
+
+    fileprivate func paint(_ shapes: [Shape], parent: NodeID, in context: CGContext, depthLeft: Int) {
         for (index, shape) in shapes.enumerated() {
             paint(shape, node: parent.child(index), in: context, depthLeft: depthLeft)
         }
     }
 
-    private func paint(_ shape: Shape, node: NodeID, in context: CGContext, depthLeft: Int) {
+    fileprivate func paint(_ shape: Shape, node: NodeID, in context: CGContext, depthLeft: Int) {
         let path = outline(of: shape)
         if case .normal = style, let gradient = shape.gradient,
             let ramp = CGGradient(
@@ -209,6 +296,16 @@ private func drawRegion(
     context.translateBy(x: -region.minX, y: -region.minY)
     Painter(style: style, omittingInnerOf: omittingInnerOf)
         .paint(picture, in: context, maxDepth: maxDepth)
+}
+
+/// A greyscale image from one byte per pixel, top row first.
+func grayImage(_ bytes: [UInt8], width: Int, height: Int) -> CGImage? {
+    guard bytes.count == width * height, let provider = CGDataProvider(data: Data(bytes) as CFData)
+    else { return nil }
+    return CGImage(
+        width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: width,
+        space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: 0),
+        provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
 }
 
 private func bitmap(width: Int, height: Int) -> CGContext? {
@@ -275,6 +372,14 @@ extension Picture {
     public func hitTest(_ point: SIMD2<Float>, maxDepth: Int = .max) -> NodeID? {
         guard point.x >= 0, point.y >= 0, point.x < Float(width), point.y < Float(height) else {
             return nil
+        }
+        // Locked areas are painted last, so they are found first: a point is in one if,
+        // in the area's own picture, what shows there belongs to the locked region.
+        for index in locked.indices.reversed() {
+            let area = locked[index]
+            if let hit = area.picture.hitTest(point, maxDepth: maxDepth), area.node.contains(hit) {
+                return hit.inLocked(index)
+            }
         }
         let location = CGPoint(x: CGFloat(point.x), y: CGFloat(point.y))
         func find(in list: [Shape], parent: NodeID?, depthLeft: Int) -> NodeID? {

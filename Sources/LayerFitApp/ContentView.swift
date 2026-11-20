@@ -22,11 +22,15 @@ public struct ContentView: View {
         VStack(spacing: 0) {
             controls
             Divider()
-            pictureArea
+            HStack(spacing: 0) {
+                pictureArea
+                Divider()
+                lockPanel
+            }
             Divider()
             levelBar
         }
-        .frame(minWidth: 720, minHeight: 560)
+        .frame(minWidth: 900, minHeight: 560)
         .background(.windowBackground)
         .dropDestination(for: URL.self) { urls, _ in
             guard let url = urls.first else { return false }
@@ -106,17 +110,6 @@ public struct ContentView: View {
                     "Re-fit: every level is re-optimised as a whole. Prefix: each level is exactly the first shapes of the next."
                 )
                 .disabled(model.isRefining)
-                Toggle(
-                    "Carry refinements",
-                    isOn: Binding(
-                        get: { model.settings.mode == .prefix || model.carryRefinements },
-                        set: { model.carryRefinements = $0 })
-                )
-                .toggleStyle(.checkbox)
-                .disabled(model.settings.mode == .prefix || model.isRefining)
-                .help(
-                    "Show a refinement on every level, not only the one it was made on. Prefix always does this, exactly, because a shape is the same on every level. In Re-fit the shapes move between levels, so a carried refinement goes on the shape with the same number and may not line up."
-                )
                 Divider().frame(height: 16)
                 Text(model.selectionLabel)
                     .foregroundStyle(model.selected.isEmpty ? .secondary : .primary)
@@ -157,6 +150,56 @@ public struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: Side
+
+    /// The refined areas as a tree: level, then area, then what was refined inside it.
+    private var lockPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Refined areas")
+                .font(.headline)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .help(
+                    "A refined area is locked: on every later level it stays as it was refined, painted on top. Click the lock to switch that off or on for one area; click a name to go to it."
+                )
+            Divider()
+            if model.lockTree.isEmpty {
+                Text("None yet. Select a shape and choose Refine selection.")
+                    .foregroundStyle(.secondary)
+                    .padding(12)
+                Spacer()
+            } else {
+                List(model.lockTree, children: \.children) { node in
+                    HStack(spacing: 6) {
+                        if let isLocked = node.isLocked {
+                            Button {
+                                model.setLocked(!isLocked, area: node)
+                            } label: {
+                                Image(systemName: isLocked ? "lock.fill" : "lock.open")
+                                    .foregroundStyle(isLocked ? .primary : .secondary)
+                                    .frame(width: 16)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(model.isFitting)
+                            .help(
+                                isLocked
+                                    ? "Locked: stays on top on later levels. Click to unlock."
+                                    : "Unlocked: not kept on top on later levels. Click to lock.")
+                        }
+                        Text(node.title)
+                            .fontWeight(node.kind == .level ? .semibold : .regular)
+                            .foregroundStyle(node.kind == .inside ? .secondary : .primary)
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture { if node.kind != .inside { model.show(area: node) } }
+                }
+                .listStyle(.sidebar)
+            }
+        }
+        .frame(width: 220)
     }
 
     // MARK: Bottom
