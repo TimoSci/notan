@@ -128,4 +128,29 @@ final class TileMeshTests: XCTestCase {
         XCTAssertEqual(tiles[0], Tile(corners: mesh.polygon(1), color: grey, path: [0]))
         XCTAssertEqual(tiles[1], Tile(corners: mesh.polygon(2), color: red, path: [1]))
     }
+
+    func testGrownPolygonMovesEveryEdgeOutward() {
+        let square: [SIMD2<Float>] = [SIMD2(10, 10), SIMD2(20, 10), SIMD2(20, 20), SIMD2(10, 20)]
+        XCTAssertEqual(
+            grownPolygon(square, by: 2), [SIMD2(8, 8), SIMD2(22, 8), SIMD2(22, 22), SIMD2(8, 22)])
+        // A corner on a straight edge moves straight out with it.
+        let withMiddle: [SIMD2<Float>] = [SIMD2(10, 10), SIMD2(15, 10), SIMD2(20, 10), SIMD2(20, 20), SIMD2(10, 20)]
+        XCTAssertEqual(grownPolygon(withMiddle, by: 2)[1], SIMD2(15, 8))
+        // A dent's corner moves into the dent.
+        let dented: [SIMD2<Float>] = [
+            SIMD2(0, 0), SIMD2(20, 0), SIMD2(20, 10), SIMD2(10, 10), SIMD2(10, 20), SIMD2(0, 20),
+        ]
+        XCTAssertEqual(grownPolygon(dented, by: 2)[3], SIMD2(12, 12))
+        // Area, plus a band along the outline, plus a square at each of the five outward
+        // corners, less one at the dent.
+        XCTAssertEqual(polygonArea(grownPolygon(dented, by: 2)), 300 + 2 * 80 + 4 * 4, accuracy: 0.01)
+    }
+
+    func testGrownPolygonLimitsHowFarASharpCornerGoes() {
+        let spike: [SIMD2<Float>] = [SIMD2(0, 0), SIMD2(100, 1), SIMD2(0, 2)]
+        let tip = grownPolygon(spike, by: 2)[1]
+        XCTAssertGreaterThan(tip.x, 102)
+        XCTAssertLessThanOrEqual(tip.x, 106.01)
+        XCTAssertEqual(tip.y, 1, accuracy: 0.01)
+    }
 }

@@ -14,13 +14,16 @@ public struct TileFitter {
     public let settings: FitSettings
     public let loss: LossConfig
 
-    /// The tiles are painted over a copy of the picture as it stood a few steps ago; this
-    /// is how many steps pass between copies.
+    /// How far, in units of the raster's softness, each tile is grown for the underlay.
     ///
-    /// Where the soft edges of two tiles meet, neither covers the pixel fully, and a
-    /// little of what lies beneath shows through. Beneath a copy of the picture itself,
-    /// what shows through is the right colour.
-    public static let baseRefreshInterval = 10
+    /// Painting soft-edged tiles one over another does not blend two neighbours evenly:
+    /// the one painted later counts for more, and a little of what lies beneath shows
+    /// through, which would pull every shared edge about a quarter pixel off the edge in
+    /// the photo. So the tiles are first painted grown, in reverse order, as an underlay:
+    /// near a shared edge it holds the colour of the tile painted first. Painted over
+    /// that, the first tile changes nothing there, and the second blends with it by its
+    /// own soft edge alone, which is even.
+    public static let underlayGrowth: Float = 6
 
     public init(target: TargetImage, settings: FitSettings, loss: LossConfig = .init()) {
         self.target = target
@@ -123,7 +126,6 @@ public struct TileFitter {
             let allLeaves = mesh.leaves
             let allLayout = TileEdgeLayout(tiles: allLeaves.map { mesh.nodes[$0].corners })
             let movable = sharesCorners ? allLeaves : children
-            let layout = TileEdgeLayout(tiles: movable.map { mesh.nodes[$0].corners })
 
             // What is optimised. Re-fit: every point, and every tile's colour. Prefix: how
             // far along its frozen edge each new cut end lies, and the new tiles' colours.
@@ -187,28 +189,53 @@ public struct TileFitter {
                 }
             }
 
-            var base: (image: MLXArray, boundaryDistance: MLXArray)!
-            var movableCrops: [PixelRect] = []
-            /// The whole tiling as the mesh has it, painted soft: what the tiles being
-            /// fitted are painted over.
-            func refreshBase() {
-                let rendered = rasterizer.render(
-                    edges: allLayout.edges(points: pointsArray(mesh.points[...])),
-                    colors: coloursArray(allLeaves), background: background, crops: crops(allLeaves),
-                    over: base)
-                eval(rendered.image, rendered.boundaryDistance)
-                base = (stopGradient(rendered.image), stopGradient(rendered.boundaryDistance))
+            // Every tile is painted, the ones that are not being fitted with the colours
+            // they have: `colourSource` lists the mesh's colours, then the parameters'.
+            let fixedColours = coloursArray(allLeaves)
+            let colourSource = MLXArray(
+                allLeaves.enumerated().map { index, leaf in
+                    Int32(movable.firstIndex(of: leaf).map { allLeaves.count + $0 } ?? index)
+                })
+            // The underlay (see `underlayGrowth`): the tiles in reverse, each with corners
+            // of its own, since grown tiles no longer share them.
+            let reversed = Array(allLeaves.reversed())
+            let reversedColours = MLXArray((0..<allLeaves.count).reversed().map { Int32($0) })
+            var next = 0
+            let underLayout = TileEdgeLayout(
+                tiles: reversed.map { leaf in
+                    let corners = Array(next..<(next + mesh.nodes[leaf].corners.count))
+                    next += corners.count
+                    return corners
+                })
+            let growth = TileFitter.underlayGrowth * loss.softness
+            let farAway = MLXArray.zeros([height, width]) + Rasterizer.noBoundary
+            var allCrops: [PixelRect] = []
+            var underCrops: [PixelRect] = []
+            var underEdges = MLXArray.zeros([0])
+            /// Brings what depends on where the tiles are up to date with the mesh.
+            func place() {
+                allCrops = crops(allLeaves)
+                underCrops = allCrops.reversed()
+                let grown = reversed.flatMap { grownPolygon(mesh.polygon($0), by: growth) }
+                underEdges = underLayout.edges(points: pointsArray(grown[...]))
             }
 
             let areaWeight = lossConfig.tileAreaWeight
             let lossAndGradient = valueAndGrad(
                 { (arrays: [MLXArray]) -> [MLXArray] in
-                    let points = points(arrays[0])
+                    // By the tiles' outlines, not the points they are built from: see
+                    // `TileEdgeLayout.pointGradient`.
+                    let outline = arrays[0]
+                    let colours = take(concatenated([fixedColours, arrays[1]], axis: 0), colourSource, axis: 0)
+                    let under = rasterizer.render(
+                        edges: underEdges, colors: take(colours, reversedColours, axis: 0),
+                        background: background, crops: underCrops)
                     let (image, boundary) = rasterizer.render(
-                        edges: layout.edges(points: points), colors: arrays[1], background: background,
-                        crops: movableCrops, over: base)
+                        edges: allLayout.edges(outline: outline), colors: colours, background: background,
+                        crops: allCrops, over: (under.image, farAway))
                     // Keeps a tile from shrinking away to nothing.
-                    let shrunk = maximum(minTileArea - layout.areas(points: points), 0).sum() / minTileArea
+                    let shrunk =
+                        maximum(minTileArea - allLayout.areas(outline: outline), 0).sum() / minTileArea
                     return [
                         tileLoss(
                             image: image, target: targetArray, boundaryDistance: boundary,
@@ -220,15 +247,35 @@ public struct TileFitter {
             let steps = max(settings.stepsPerStage, 1)
             for step in 1...steps {
                 if isCancelled() { return levels }
-                if (step - 1) % TileFitter.baseRefreshInterval == 0 { refreshBase() }
-                movableCrops = crops(movable)
-                var (_, gradients) = onOneStream { lossAndGradient(parameters) }
-                if let mask { gradients[0] = gradients[0] * mask }
-                parameters = adam.step(parameters: parameters, gradients: gradients)
+                place()
+                let outline = allLayout.outline(points: points(parameters[0]))
+                let (_, gradients) = onOneStream { lossAndGradient([outline, parameters[1]]) }
+                let byPoint = allLayout.pointGradient(
+                    outlineGradient: gradients[0].asArray(Float.self), pointCount: mesh.points.count)
+                let first: MLXArray
+                if let mask {
+                    first = MLXArray(byPoint, [mesh.points.count, 2]) * mask
+                } else {
+                    // A cut end moves only along its edge.
+                    first = MLXArray(
+                        slideAlong.indices.map { index in
+                            let point = (firstNewPoint + index) * 2
+                            return byPoint[point] * slideAlong[index].x + byPoint[point + 1] * slideAlong[index].y
+                        })
+                }
+                parameters = adam.step(parameters: parameters, gradients: [first, gradients[1]])
                 parameters[1] = clip(parameters[1], min: 0, max: 1)
                 if !sharesCorners { parameters[0] = clip(parameters[0], min: slideLow, max: slideHigh) }
                 eval(parameters)
+                let before = mesh.points
                 store()
+                if sharesCorners {
+                    // A step may push a corner across a neighbouring tile. Those corners go
+                    // back, and the tiling stays one.
+                    let stepped = mesh.points
+                    revertInvalid(&mesh, previous: before, minArea: 1)
+                    if mesh.points != stepped { parameters[0] = pointsArray(mesh.points[...]) }
+                }
                 if step % Fitter.progressInterval == 0 && step < settings.stepsPerStage {
                     progress(
                         FitProgress(
@@ -256,4 +303,21 @@ public struct TileFitter {
         }
         return levels
     }
+}
+
+/// Puts back the corners of tiles that a step has left unsound: crossing themselves,
+/// turned inside out or smaller than `minArea`. `previous` holds every point's position
+/// before the step, when the tiling was sound.
+///
+/// Only the corners of the unsound tiles go back, so the rest of the step stands. A tile
+/// that was sound only thanks to a neighbour's move may be unsound after that; then every
+/// point goes back.
+func revertInvalid(_ mesh: inout TileMesh, previous: [SIMD2<Float>], minArea: Float) {
+    let broken = mesh.invalidLeaves(minArea: minArea)
+    guard !broken.isEmpty else { return }
+    for leaf in broken {
+        for corner in mesh.nodes[leaf].corners { mesh.setPoint(corner, previous[corner]) }
+    }
+    guard !mesh.invalidLeaves(minArea: minArea).isEmpty else { return }
+    for index in previous.indices { mesh.setPoint(index, previous[index]) }
 }

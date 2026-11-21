@@ -362,18 +362,34 @@ public func makeCGImage(_ picture: Picture, pixelSize: CGSize, maxDepth: Int = .
     return context.makeImage()
 }
 
-/// How far the picture, drawn hard-edged at the target's size, is from the target: the
-/// squared difference averaged over every channel of every pixel, as `plainMSE` gives.
+/// How far the picture, drawn hard-edged, is from the target: the squared difference
+/// averaged over every channel of every pixel, as `plainMSE` gives.
+///
+/// The picture is drawn at several times the target's size and averaged down, so that
+/// what is measured is the shapes themselves. Drawn at the target's own size, the half
+/// pixel by which tiles are grown to hide their seams would count as error.
 public func measuredMSE(_ picture: Picture, against target: TargetImage) -> Float {
+    let factor = 4
+    let width = target.width * factor
     let drawn = renderRegion(
         picture, region: CGRect(x: 0, y: 0, width: picture.width, height: picture.height),
-        width: target.width, height: target.height)
+        width: width, height: target.height * factor)
     var sum: Double = 0
-    for index in drawn.indices {
-        let difference = Double(drawn[index] - target.pixels[index])
-        sum += difference * difference
+    for y in 0..<target.height {
+        for x in 0..<target.width {
+            for channel in 0..<3 {
+                var mean: Float = 0
+                for dy in 0..<factor {
+                    let row = ((y * factor + dy) * width + x * factor) * 3 + channel
+                    for dx in 0..<factor { mean += drawn[row + dx * 3] }
+                }
+                let difference = Double(
+                    mean / Float(factor * factor) - target.pixels[(y * target.width + x) * 3 + channel])
+                sum += difference * difference
+            }
+        }
     }
-    return Float(sum / Double(max(drawn.count, 1)))
+    return Float(sum / Double(max(target.pixels.count, 1)))
 }
 
 /// The part of the picture inside `region` (picture coordinates), drawn at width × height

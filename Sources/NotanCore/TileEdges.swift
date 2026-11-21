@@ -40,25 +40,68 @@ public struct TileEdgeLayout {
         }
         tileCount = tiles.count
         edgeCount = edges
+        fromIndex = from
+        toIndex = to
+        weights = weight
         self.from = MLXArray(from, [tiles.count, edges])
         self.to = MLXArray(to, [tiles.count, edges])
         self.weight = MLXArray(weight, [tiles.count, edges, 1])
     }
 
-    /// `points` [V, 2] are the mesh's points. Returns [T, E, 4]: for every edge of every
-    /// tile its start x, start y, end x and end y. Differentiable by `points`.
-    public func edges(points: MLXArray) -> MLXArray {
+    // The same, for use on the CPU.
+    private let fromIndex: [Int32]
+    private let toIndex: [Int32]
+    private let weights: [Float]
+
+    /// `points` [V, 2] are the mesh's points. Returns each tile's outline [T, E, 2]: its
+    /// corners, with the extra points along its first edge.
+    public func outline(points: MLXArray) -> MLXArray {
         let start = take(points, from, axis: 0)  // [T, E, 2]
-        let outline = start + (take(points, to, axis: 0) - start) * weight
+        return start + (take(points, to, axis: 0) - start) * weight
+    }
+
+    /// From outlines [T, E, 2] to [T, E, 4]: for every edge of every tile its start x,
+    /// start y, end x and end y.
+    public func edges(outline: MLXArray) -> MLXArray {
         let next = concatenated([outline[0..., 1..., 0...], outline[0..., 0..<1, 0...]], axis: 1)
         return concatenated([outline, next], axis: -1)
     }
 
-    /// Each tile's area [T], positive for a sound tile (see `polygonArea`). Differentiable
-    /// by `points`.
-    public func areas(points: MLXArray) -> MLXArray {
-        let edges = edges(points: points)
+    /// Each tile's area [T] from its outline, positive for a sound tile (see `polygonArea`).
+    public func areas(outline: MLXArray) -> MLXArray {
+        let edges = edges(outline: outline)
         let twice = edges[0..., 0..., 0] * edges[0..., 0..., 3] - edges[0..., 0..., 2] * edges[0..., 0..., 1]
         return twice.sum(axis: 1) / 2
+    }
+
+    /// `edges(outline:)` of `outline(points:)`. Differentiable by `points`, but see
+    /// `pointGradient` before relying on that in a fit.
+    public func edges(points: MLXArray) -> MLXArray { edges(outline: outline(points: points)) }
+
+    /// `areas(outline:)` of `outline(points:)`.
+    public func areas(points: MLXArray) -> MLXArray { areas(outline: outline(points: points)) }
+
+    /// Carries a derivative by the outlines, `outlineGradient` (T × E × 2 numbers, as
+    /// `outline(points:)` lays them out), back to the mesh's points: `pointCount` × 2
+    /// numbers.
+    ///
+    /// MLX would do this itself, differentiating `outline(points:)`. But a point shared by
+    /// several tiles collects a part from each, and on the GPU the order they are added
+    /// in is not fixed, so the last digits differ from run to run, and a fit magnifies
+    /// that into different tiles. Here they are added in one fixed order.
+    public func pointGradient(outlineGradient: [Float], pointCount: Int) -> [Float] {
+        precondition(outlineGradient.count == weights.count * 2)
+        var gradient = [Float](repeating: 0, count: pointCount * 2)
+        for index in weights.indices {
+            let weight = weights[index]
+            let a = Int(fromIndex[index]) * 2
+            let b = Int(toIndex[index]) * 2
+            for axis in 0..<2 {
+                let part = outlineGradient[index * 2 + axis]
+                gradient[a + axis] += (1 - weight) * part
+                gradient[b + axis] += weight * part
+            }
+        }
+        return gradient
     }
 }

@@ -94,14 +94,20 @@ error that no straight cut improves would waste cuts.
 - The existing rasteriser already works on straight edges, so tiles go to it directly.
   It needs the same number of edges for every shape, so a tile with fewer corners has
   one of its edges divided into equal parts.
-- Tiles are painted over a base picture. Where two soft tile edges meet, a little of
-  the base shows through. So the base is a copy of the current soft picture, refreshed
-  every few steps and held constant, which makes what shows through the right colour.
+- Painting soft-edged tiles one over another does not blend two neighbours evenly: the
+  one painted later counts for more, which would pull every shared edge about a quarter
+  pixel off the edge in the photo. So the tiles are first painted grown by a few pixels,
+  in reverse order, as an underlay; the tiles themselves are painted over that. Near a
+  shared edge the underlay holds the colour of the tile painted first, so the second
+  blends with it by its own soft edge alone, which is even.
+- A corner shared by several tiles collects a part of its gradient from each. That sum
+  is done on the CPU in a fixed order, so that fits are reproducible.
 - The loss is the existing boundary-weighted error plus the plain error floor.
 - In Re-fit, a penalty keeps tiles from shrinking, and after every step each tile is
   checked: not crossing itself, area above the minimum. Corners of failing tiles go back
   to where they were.
-- A level's error is measured on the hard-edged picture drawn from the tiles.
+- A level's error is measured on the hard-edged picture drawn from the tiles, at four
+  times the working size and averaged down.
 
 ### Display and export
 
@@ -115,8 +121,8 @@ error that no straight cut improves would waste cuts.
 
 ## Left to the builder
 
-- Number of cut candidates per tile, the shrink penalty's weight, how often the base is
-  refreshed, the outline width.
+- Number of cut candidates per tile, the shrink penalty's weight, how far tiles are
+  grown for the underlay, the outline width.
 - Layout of files and tests.
 
 ## How we know it works

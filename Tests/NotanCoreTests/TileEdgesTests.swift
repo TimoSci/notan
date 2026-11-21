@@ -107,4 +107,25 @@ final class TileEdgesTests: XCTestCase {
         XCTAssertEqual(tiles.item(Float.self), whole.item(Float.self), accuracy: 1e-6)
         XCTAssertGreaterThan(tiles.item(Float.self), 0.01)
     }
+
+    func testPointGradientMatchesTheDerivativeMLXTakes() {
+        let mesh = fourTileMesh()
+        let layout = TileEdgeLayout(tiles: mesh.leaves.map { mesh.nodes[$0].corners })
+        let points = pointsArray(mesh)
+        // Any smooth function of the outlines will do.
+        func value(_ outline: MLXArray) -> MLXArray {
+            (layout.areas(outline: outline) * layout.areas(outline: outline)).sum() + (outline * outline * outline).sum()
+        }
+        let byPoints = grad { (points: MLXArray) in value(layout.outline(points: points)) }(points)
+            .asArray(Float.self)
+        let byOutline = grad { (outline: MLXArray) in value(outline) }(layout.outline(points: points))
+            .asArray(Float.self)
+        let carried = layout.pointGradient(outlineGradient: byOutline, pointCount: mesh.points.count)
+        XCTAssertEqual(carried.count, byPoints.count)
+        let scale = byPoints.map(abs).max() ?? 0
+        XCTAssertGreaterThan(scale, 1)
+        for index in carried.indices {
+            XCTAssertEqual(carried[index], byPoints[index], accuracy: 1e-5 * scale, "element \(index)")
+        }
+    }
 }

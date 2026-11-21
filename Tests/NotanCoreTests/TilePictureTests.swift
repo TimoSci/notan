@@ -112,14 +112,20 @@ final class TilePictureTests: XCTestCase {
         XCTAssertEqual(picture.estimatedBytes, 3 + 2 * 3 + 6 * 4)
     }
 
-    func testMeasuredMSEIsZeroForAPictureOfItself() throws {
-        var mesh = fourTileMesh()
+    func testMeasuredMSEIsNearZeroForAPictureOfItself() throws {
+        // Upright and level cuts on whole pixels, so every pixel lies in one tile.
+        var mesh = TileMesh(width: 64, height: 48, color: .white)
+        mesh.cut(0, from: CutEnd(edge: 0, t: 0.5), to: CutEnd(edge: 2, t: 0.5), stage: 1, shareCorners: false)
+        mesh.cut(1, from: CutEnd(edge: 3, t: 0.5), to: CutEnd(edge: 1, t: 0.5), stage: 2, shareCorners: false)
+        mesh.cut(2, from: CutEnd(edge: 1, t: 0.5), to: CutEnd(edge: 3, t: 0.5), stage: 2, shareCorners: false)
         for (index, leaf) in mesh.leaves.enumerated() { mesh.setColor(leaf, index % 2 == 0 ? .black : .white) }
         let picture = tilePicture(mesh)
-        let own = try pixels(picture, width: 64, height: 48)
-        XCTAssertLessThan(
-            measuredMSE(picture, against: TargetImage(width: 64, height: 48, pixels: own)), 1e-6)
-        let inverse = TargetImage(width: 64, height: 48, pixels: own.map { 1 - $0 })
-        XCTAssertGreaterThan(measuredMSE(picture, against: inverse), 0.85)
+        let own = makeTarget(width: 64, height: 48) { x, y in
+            picture.tiles.first { outline(of: $0).contains(CGPoint(x: CGFloat(x), y: CGFloat(y))) }!.color
+        }
+        // Not quite zero: the tiles are drawn grown by an eighth of a pixel to hide seams.
+        XCTAssertLessThan(measuredMSE(picture, against: own), 0.002)
+        let inverse = TargetImage(width: 64, height: 48, pixels: own.pixels.map { 1 - $0 })
+        XCTAssertGreaterThan(measuredMSE(picture, against: inverse), 0.95)
     }
 }

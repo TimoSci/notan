@@ -56,6 +56,27 @@ public func isSimplePolygon(_ polygon: [SIMD2<Float>]) -> Bool {
     return true
 }
 
+/// The polygon with every edge moved outward by `margin`, corners kept sharp. A very
+/// sharp corner would shoot far out, so no corner moves more than three margins.
+func grownPolygon(_ polygon: [SIMD2<Float>], by margin: Float) -> [SIMD2<Float>] {
+    let count = polygon.count
+    func outward(_ a: SIMD2<Float>, _ b: SIMD2<Float>) -> SIMD2<Float>? {
+        let d = b - a
+        let length = (d * d).sum().squareRoot()
+        return length > 0 ? SIMD2(d.y, -d.x) / length : nil
+    }
+    return polygon.indices.map { index in
+        let corner = polygon[index]
+        let before = outward(polygon[(index + count - 1) % count], corner)
+        let after = outward(corner, polygon[(index + 1) % count])
+        guard let n1 = before ?? after, let n2 = after ?? before else { return corner }
+        var offset = (n1 + n2) * (margin / max(1 + (n1 * n2).sum(), 1e-3))
+        let length = (offset * offset).sum().squareRoot()
+        if length > 3 * margin { offset *= 3 * margin / length }
+        return corner + offset
+    }
+}
+
 /// A point on a tile's outline: on the edge from corner `edge` to the next corner, the
 /// fraction `t` of the way along, strictly between 0 and 1.
 public struct CutEnd: Equatable, Sendable {
