@@ -423,6 +423,41 @@ public enum LevelMode: String, Sendable, CaseIterable {
     case prefix
 }
 
+public enum ShapeKind: String, Sendable, CaseIterable {
+    /// Closed Bézier curves painted back to front, free to overlap.
+    case curves
+    /// Straight-edged tiles that share edges and never overlap, made by cutting the
+    /// picture again and again.
+    case tiles
+}
+
+public enum TileOrder: String, Sendable, CaseIterable {
+    /// Every tile is cut once more at each stage: a strict tree, with 1, 2, 4, 8… tiles.
+    case tree
+    /// Only the tiles with the most to gain are cut at each stage.
+    case worst
+}
+
+/// How many tiles are cut at each stage, so that `totalTiles` tiles are reached: each cut
+/// adds one. In tree order every tile is cut, so the counts double; worst first follows
+/// the curve fitter's schedule. The last stage is cut short if need be.
+public func tileSchedule(totalTiles: Int, order: TileOrder) -> [Int] {
+    let cuts = max(totalTiles - 1, 0)
+    switch order {
+    case .worst: return stageSchedule(totalShapes: cuts)
+    case .tree:
+        var schedule: [Int] = []
+        var remaining = cuts
+        var size = 1
+        while remaining > 0 {
+            schedule.append(min(size, remaining))
+            remaining -= min(size, remaining)
+            size *= 2
+        }
+        return schedule
+    }
+}
+
 public struct Level: Sendable {
     public var picture: Picture
     public var mse: Float
@@ -447,6 +482,10 @@ public struct FitSettings: Sendable {
     public var avoidFolds = true
     /// Whether each shape is filled with a linear gradient instead of one flat colour.
     public var gradients = false
+    /// What the picture is built from: curved shapes laid over one another, or tiles.
+    public var kind = ShapeKind.curves
+    /// For tiles: which tiles are cut at each stage.
+    public var tileOrder = TileOrder.worst
 
     public init(
         totalShapes: Int = 128, workingSize: Int = 256, stepsPerStage: Int = 150,
