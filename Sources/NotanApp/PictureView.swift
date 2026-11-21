@@ -14,6 +14,8 @@ struct PictureView: View {
     var backgroundSelected = false
     /// For each selected gap, white where it shows; a gap has no outline to draw.
     var selectedGapMasks: [CGImage] = []
+    /// For each selected tile, the tiles it stands for at the level shown.
+    var selectedTiles: [[Tile]] = []
     /// Called with the clicked point in picture coordinates, or nil for a click outside
     /// the picture, and whether Shift was held.
     var onClick: ((SIMD2<Float>?, Bool) -> Void)?
@@ -57,6 +59,7 @@ struct PictureView: View {
 
     /// A dark line under a light one, so the outline shows on any colour.
     private func outlineSelection(of picture: NotanCore.Picture, in cg: CGContext, size: CGSize) {
+        dim(picture, allBut: selectedTiles.flatMap { $0 }, in: cg, size: size)
         for mask in selectedGapMasks {
             // Lighten the gap and leave everything else as it is.
             cg.saveGState()

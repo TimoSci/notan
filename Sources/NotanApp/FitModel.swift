@@ -3,6 +3,29 @@ import Foundation
 import NotanCore
 import Observation
 
+/// One way of fitting a photo, with a result of its own: curves or tiles, for tiles the
+/// order of the cuts, and how the levels relate.
+public struct Variant: Hashable, Sendable {
+    public var kind: ShapeKind
+    /// Which tiles are cut at each stage; nil for curves, which are not cut.
+    public var order: TileOrder?
+    public var mode: LevelMode
+
+    public init(kind: ShapeKind, order: TileOrder?, mode: LevelMode) {
+        self.kind = kind
+        self.order = kind == .tiles ? order : nil
+        self.mode = mode
+    }
+
+    public init(_ settings: FitSettings) {
+        self.init(kind: settings.kind, order: settings.tileOrder, mode: settings.mode)
+    }
+
+    public static func curves(_ mode: LevelMode) -> Variant {
+        Variant(kind: .curves, order: nil, mode: mode)
+    }
+}
+
 /// Runs one fit to completion on the calling thread: target, settings, progress, isCancelled.
 public typealias FitRunner = (
     TargetImage, FitSettings, @escaping (FitProgress) -> Void, @escaping () -> Bool
@@ -76,8 +99,8 @@ public final class FitModel {
 
     public var settings = FitSettings() {
         didSet {
-            // A selection names a shape of one mode's picture.
-            if oldValue.mode != settings.mode, !isRefining { selection = nil }
+            // A selection names a shape of one variant's picture.
+            if Variant(oldValue) != variant, !isRefining { selection = nil }
         }
     }
     /// The regions Refine acts on, in the order they were selected; none is the whole
@@ -98,7 +121,7 @@ public final class FitModel {
     public private(set) var photoURL: URL?
     public private(set) var photo: LoadedPhoto?
     /// Finished levels per mode, for the loaded photo. Level 0 is the background alone.
-    public private(set) var results: [LevelMode: [Level]] = [:]
+    public private(set) var results: [Variant: [Level]] = [:]
     /// The newest state of the fit in progress, including its unfinished stage.
     public private(set) var livePicture: NotanCore.Picture?
     public private(set) var status: Status = .idle
@@ -138,13 +161,13 @@ public final class FitModel {
             }
         }
     }
-    private var refinements: [LevelMode: [Refinement]] = [:]
+    private var refinements: [Variant: [Refinement]] = [:]
     private var nextRefinementID = 0
 
     private var stop = 0
     /// How many layers of refinement to show; nil shows them all.
     private var depthLimit: Int?
-    private var fittingMode: LevelMode?
+    private var fittingMode: Variant?
     private var generation = 0
     private var cancelFlag: CancelFlag?
 
@@ -158,7 +181,11 @@ public final class FitModel {
 
     public init(
         runFit: @escaping FitRunner = { target, settings, progress, isCancelled in
-            Fitter(target: target, settings: settings).run(progress: progress, isCancelled: isCancelled)
+            settings.kind == .tiles
+                ? TileFitter(target: target, settings: settings).run(
+                    progress: progress, isCancelled: isCancelled)
+                : Fitter(target: target, settings: settings).run(
+                    progress: progress, isCancelled: isCancelled)
         },
         loadPhoto: @escaping PhotoLoader = { try NotanCore.loadPhoto(url: $0, workingSize: $1) },
         runRefine: @escaping RefineRunner = { url, picture, node, settings, progress, isCancelled in
@@ -173,8 +200,14 @@ public final class FitModel {
 
     // MARK: What is shown
 
-    /// The levels of the mode being viewed.
-    public var levels: [Level] { results[settings.mode] ?? [] }
+    /// Which of the photo's results is being viewed, and would be fitted by Start.
+    public var variant: Variant { Variant(settings) }
+
+    /// Whether the picture is built from tiles, not curves.
+    public var isTiling: Bool { settings.kind == .tiles }
+
+    /// The levels of the variant being viewed.
+    public var levels: [Level] { results[variant] ?? [] }
 
     public var isFitting: Bool {
         if case .fitting = status { return true }
@@ -188,7 +221,7 @@ public final class FitModel {
     public var shownLevel: Level? {
         guard !levels.isEmpty else { return nil }
         var level = levels[shownStop]
-        attachRefinements(to: &level.picture, mode: settings.mode, level: shownStop)
+        attachRefinements(to: &level.picture, mode: variant, level: shownStop)
         return level
     }
 
@@ -197,19 +230,19 @@ public final class FitModel {
     /// The index in `refinements[mode]` of the refinement shown inside one of a level's own
     /// regions: the one made on that level. In Prefix mode a shape is the same on every
     /// level, so there an unlocked refinement of it is shown on all of them.
-    private func ownIndex(root: Root, mode: LevelMode, level: Int) -> Int? {
+    private func ownIndex(root: Root, mode: Variant, level: Int) -> Int? {
         let all = refinements[mode] ?? []
         if let exact = all.firstIndex(where: { $0.root == root && $0.madeAtLevel == level }) {
             return exact
         }
-        guard mode == .prefix, !root.isGap else { return nil }
+        guard mode.mode == .prefix, !root.isGap else { return nil }
         return all.firstIndex { $0.root == root && !$0.isLocked }
     }
 
     /// The locked areas painted on top of a level, in painting order, each with the index
     /// of its refinement: those made on earlier levels. The earliest is painted last, so
     /// that where two overlap, the one locked first is the one that shows.
-    private func lockedAreas(mode: LevelMode, level: Int) -> [(index: Int, area: LockedArea)] {
+    private func lockedAreas(mode: Variant, level: Int) -> [(index: Int, area: LockedArea)] {
         let all = refinements[mode] ?? []
         let levels = results[mode] ?? []
         let above = all.indices
@@ -226,7 +259,7 @@ public final class FitModel {
         }
     }
 
-    private func attachRefinements(to picture: inout NotanCore.Picture, mode: LevelMode, level: Int) {
+    private func attachRefinements(to picture: inout NotanCore.Picture, mode: Variant, level: Int) {
         guard let all = refinements[mode], !all.isEmpty else { return }
         // A picture whose gaps are not told apart still has gap 0: the whole uncovered area.
         for gap in 0..<max(picture.gaps.count, 1) {
@@ -257,7 +290,7 @@ public final class FitModel {
     /// Sets the refinement of a region of the picture shown on `level`. For one of the
     /// level's own shapes or gaps this replaces (or creates) its refinement; for a locked
     /// area, or anything deeper, it edits the refinement that region lives in.
-    private func writeInner(_ inner: Inner, at node: NodeID, mode: LevelMode, level: Int) {
+    private func writeInner(_ inner: Inner, at node: NodeID, mode: Variant, level: Int) {
         var all = refinements[mode] ?? []
         defer { refinements[mode] = all }
         let isRoot = node.inBackground ? node.path.isEmpty : node.path.count == 1
@@ -280,7 +313,7 @@ public final class FitModel {
             // In Prefix mode a shape has one refinement whatever level it was made on;
             // otherwise each level can have its own.
             let existing =
-                mode == .prefix && !root.isGap
+                mode.mode == .prefix && !root.isGap
                 ? all.firstIndex { $0.root == root }
                 : all.firstIndex { $0.root == root && $0.madeAtLevel == level }
             if let existing {
@@ -322,7 +355,7 @@ public final class FitModel {
 
     /// The refined areas of the mode being viewed, grouped by the level they were made on.
     public var lockTree: [LockNode] {
-        let mode = settings.mode
+        let mode = variant
         let all = refinements[mode] ?? []
         let levels = results[mode] ?? []
         func inside(_ shapes: [NotanCore.Shape], of title: String, id: String) -> [LockNode]? {
@@ -360,9 +393,9 @@ public final class FitModel {
     /// names may no longer be where they were.
     public func setLocked(_ locked: Bool, area: LockNode) {
         guard !isFitting, let id = area.refinement,
-            let index = refinements[settings.mode]?.firstIndex(where: { $0.id == id })
+            let index = refinements[variant]?.firstIndex(where: { $0.id == id })
         else { return }
-        refinements[settings.mode]?[index].isLocked = locked
+        refinements[variant]?[index].isLocked = locked
         selected = []
     }
 
@@ -373,13 +406,13 @@ public final class FitModel {
         stop = area.level
         followsLatest = stop == levels.count - 1
         guard let id = area.refinement,
-            let refinement = refinements[settings.mode]?.first(where: { $0.id == id })
+            let refinement = refinements[variant]?.first(where: { $0.id == id })
         else { return }
         selected = [refinement.root.node]
     }
 
     public var shownPicture: NotanCore.Picture? {
-        if isFitting, followsLatest, fittingMode == settings.mode, let livePicture {
+        if isFitting, followsLatest, fittingMode == variant, let livePicture {
             return livePicture
         }
         return shownLevel?.picture
@@ -389,7 +422,8 @@ public final class FitModel {
         guard let picture = shownPicture else { return "" }
         return FitModel.caption(
             shapes: picture.shapeCount(maxDepth: shownDepth),
-            bytes: picture.estimatedBytes(maxDepth: shownDepth), fileBytes: photo?.fileBytes ?? 0)
+            bytes: picture.estimatedBytes(maxDepth: shownDepth), fileBytes: photo?.fileBytes ?? 0,
+            tiles: !picture.tiles.isEmpty)
     }
 
     // MARK: Depth
@@ -441,23 +475,35 @@ public final class FitModel {
         return selected.filter(\.isBackground).compactMap { maskImage(picture, node: $0, scale: 2) }
     }
 
+    /// For every selected tile, the tiles it stands for at the level shown: itself, or the
+    /// pieces it has been cut into by then.
+    public var selectedTiles: [[Tile]] {
+        guard let picture = shownLevel?.picture else { return [] }
+        return selected.filter(\.isTile).map { picture.tiles(under: $0) }
+    }
+
     /// Whether a gap, or the background as a whole, is among the selected regions.
     public var backgroundSelected: Bool { selected.contains(where: \.isBackground) }
 
     public var selectionLabel: String {
         if selected.count > 1 {
-            let kind = selected.contains(where: \.isBackground) ? "regions" : "shapes"
+            let kind =
+                selected.contains(where: \.isTile)
+                ? "tiles" : (selected.contains(where: \.isBackground) ? "regions" : "shapes")
             return "\(selected.count) \(kind) selected"
         }
         guard let selection else { return "Whole picture" }
+        if selection.isTile {
+            return "Tile " + selection.path.map { "\($0 + 1)" }.joined(separator: " › ")
+        }
         // A region of a locked area is named as in the picture of the level it is from.
         var home = shownLevel?.picture
         var suffix = ""
         if let number = selection.locked {
-            let areas = lockedAreas(mode: settings.mode, level: shownStop)
+            let areas = lockedAreas(mode: variant, level: shownStop)
             guard areas.indices.contains(number) else { return "Whole picture" }
             home = areas[number].area.picture
-            let level = refinements[settings.mode]?[areas[number].index].madeAtLevel ?? 0
+            let level = refinements[variant]?[areas[number].index].madeAtLevel ?? 0
             suffix = ", locked on level \(level)"
         }
         let steps = selection.path.map { "\($0 + 1)" }.joined(separator: " › ")
@@ -503,7 +549,27 @@ public final class FitModel {
     /// whole picture if it has none.
     public func selectParent() {
         guard !isFitting, selected.count == 1 else { return }
-        selection = selection?.parent
+        selection = selection?.parent.flatMap(FitModel.meaningful)
+    }
+
+    /// The tile at the top of the tree is the whole picture, which is what no selection
+    /// means; any other region stands for itself.
+    private static func meaningful(_ node: NodeID) -> NodeID? {
+        node.isTile && node.path.isEmpty ? nil : node
+    }
+
+    /// Tiles are selected by their place in the tree of cuts, which is the same on every
+    /// level. On a level where a selected tile has not been cut out yet, the tile that
+    /// contains it is selected in its place.
+    private func resolveTileSelection() {
+        guard let picture = shownLevel?.picture, selected.contains(where: \.isTile) else { return }
+        var kept: [NodeID] = []
+        for node in selected {
+            let resolved = node.isTile ? picture.resolved(node).flatMap(FitModel.meaningful) : node
+            // Two tiles may fall back to one that contains both.
+            if let resolved, !kept.contains(where: { $0.contains(resolved) }) { kept.append(resolved) }
+        }
+        selected = kept
     }
 
     // MARK: The Level slider
@@ -516,18 +582,22 @@ public final class FitModel {
     /// The Level slider's position: within the selected region's refinement, or within the
     /// picture's own levels when nothing is selected.
     public var sliderStop: Int {
-        selected.isEmpty ? shownStop : (selectedInner?.shownIndex ?? 0)
+        selected.isEmpty || isTiling ? shownStop : (selectedInner?.shownIndex ?? 0)
     }
 
     /// The slider's last position. With several regions selected there is no one set of
     /// levels to step through, so it is 0.
     public var sliderLast: Int {
-        selected.isEmpty ? max(levels.count - 1, 0) : max((selectedInner?.levels.count ?? 1) - 1, 0)
+        selected.isEmpty || isTiling
+            ? max(levels.count - 1, 0) : max((selectedInner?.levels.count ?? 1) - 1, 0)
     }
 
-    public nonisolated static func caption(shapes: Int, bytes: Int, fileBytes: Int) -> String {
+    public nonisolated static func caption(
+        shapes: Int, bytes: Int, fileBytes: Int, tiles: Bool = false
+    ) -> String {
         let english = Locale(identifier: "en_US")
-        var parts = ["\(shapes) \(shapes == 1 ? "shape" : "shapes")"]
+        let noun = tiles ? "tile" : "shape"
+        var parts = ["\(shapes) \(shapes == 1 ? noun : noun + "s")"]
         parts.append(
             bytes < 1000
                 ? "\(bytes) B"
@@ -585,9 +655,12 @@ public final class FitModel {
         depthLimit = nil
         photo = loaded
 
-        let mode = settings.mode
+        let mode = variant
         let runSettings = settings
-        let stageCount = stageSchedule(totalShapes: runSettings.totalShapes).count
+        let stageCount =
+            runSettings.kind == .tiles
+            ? tileSchedule(totalTiles: runSettings.totalShapes, order: runSettings.tileOrder).count
+            : stageSchedule(totalShapes: runSettings.totalShapes).count
         results[mode] = []
         refinements[mode] = []
         stop = 0
@@ -622,8 +695,9 @@ public final class FitModel {
         }
     }
 
+    /// Refining is for curves: a tile can only be cut further by fitting more tiles.
     public var canRefine: Bool {
-        !selected.isEmpty && !isFitting && shownLevel != nil && photoURL != nil
+        !selected.isEmpty && !isFitting && shownLevel != nil && photoURL != nil && !isTiling
     }
 
     /// Fits finer shapes inside each selected region of the level shown, using the current
@@ -637,7 +711,7 @@ public final class FitModel {
             max(settings.stepsPerStage, FitModel.stepsRange.lowerBound), FitModel.stepsRange.upperBound)
         abandonRun()
 
-        let mode = settings.mode
+        let mode = variant
         let rootStop = shownStop
         let runSettings = settings
         let picture = level.picture
@@ -705,17 +779,18 @@ public final class FitModel {
 
     public func userMovedSlider(to newStop: Int) {
         guard !isRefining else { return }
-        guard selected.count <= 1 else { return }
-        if let selection {
+        guard selected.count <= 1 || isTiling else { return }
+        if let selection, !isTiling {
             guard var inner = selectedInner, !inner.levels.isEmpty, levels.indices.contains(shownStop)
             else { return }
             inner.shown = max(0, min(newStop, inner.levels.count - 1))
-            writeInner(inner, at: selection, mode: settings.mode, level: shownStop)
+            writeInner(inner, at: selection, mode: variant, level: shownStop)
             return
         }
         stop = max(0, min(newStop, levels.count - 1))
         // Parking on the newest level means "keep following".
         followsLatest = stop == levels.count - 1
+        resolveTileSelection()
     }
 
     /// Writes the level shown on the slider as SVG, at the original photo's pixel size.
@@ -763,14 +838,14 @@ public final class FitModel {
         isRefining = false
     }
 
-    private func receive(_ progress: FitProgress, mode: LevelMode) {
+    private func receive(_ progress: FitProgress, mode: Variant) {
         // A fit told to stop may still report what it had in hand; it no longer counts.
         guard cancelFlag?.isCancelled == false else { return }
         livePicture = progress.picture
         status = .fitting(stage: progress.stage, stageCount: progress.stageCount)
         if let level = progress.finishedLevel {
             results[mode, default: []].append(level)
-            if followsLatest && settings.mode == mode {
+            if followsLatest && variant == mode {
                 stop = (results[mode]?.count ?? 1) - 1
             }
         }

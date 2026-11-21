@@ -128,4 +128,25 @@ final class TilePictureTests: XCTestCase {
         let inverse = TargetImage(width: 64, height: 48, pixels: own.pixels.map { 1 - $0 })
         XCTAssertGreaterThan(measuredMSE(picture, against: inverse), 0.95)
     }
+
+    func testDimmingLeavesTheSelectedTilesBright() throws {
+        let picture = tilePicture(fourTileMesh())  // every tile white
+        let selected = picture.tiles(under: .tile([0]))
+        let image = try XCTUnwrap(
+            makeCGImage(picture, pixelSize: CGSize(width: 128, height: 96), dimmingAllBut: selected))
+        let rgb = rgbPixels(of: image, width: 128, height: 96)
+        for tile in picture.tiles {
+            let at = centroid(tile) * 2
+            let value = rgb[(Int(at.y) * 128 + Int(at.x)) * 3]
+            if tile.path.first == 0 {
+                XCTAssertGreaterThan(value, 0.99, "selected tile \(tile.path) is left as it is")
+            } else {
+                XCTAssertEqual(value, 1 - Float(selectionDimming), accuracy: 0.02, "tile \(tile.path) is dimmed")
+            }
+        }
+        // No line shows between the two selected pieces.
+        let between = (selected[0].corners.filter { selected[1].corners.contains($0) })
+        let middle = between.reduce(SIMD2<Float>(0, 0), +) / Float(between.count) * 2
+        XCTAssertGreaterThan(rgb[(Int(middle.y) * 128 + Int(middle.x)) * 3], 0.99)
+    }
 }

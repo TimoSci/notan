@@ -1117,9 +1117,9 @@ final class FitModelTests: XCTestCase {
         await waitFor("refit done") { model.status == .done }
         model.settings.mode = .prefix
         model.start()
-        await waitFor("prefix done") { model.results[.prefix]?.count == 3 && model.status == .done }
-        XCTAssertEqual(model.results[.refit]?.count, 6)
-        XCTAssertEqual(model.results[.prefix]?.count, 3)
+        await waitFor("prefix done") { model.results[.curves(.prefix)]?.count == 3 && model.status == .done }
+        XCTAssertEqual(model.results[.curves(.refit)]?.count, 6)
+        XCTAssertEqual(model.results[.curves(.prefix)]?.count, 3)
     }
 
     func testSwitchingModeKeepsStopClampedToAvailableLevels() async {
@@ -1133,7 +1133,7 @@ final class FitModelTests: XCTestCase {
         await waitFor("refit done") { model.status == .done }
         model.settings.mode = .prefix
         model.start()
-        await waitFor("prefix done") { model.results[.prefix]?.count == 3 && model.status == .done }
+        await waitFor("prefix done") { model.results[.curves(.prefix)]?.count == 3 && model.status == .done }
 
         model.settings.mode = .refit
         model.userMovedSlider(to: 5)
@@ -1166,7 +1166,7 @@ final class FitModelTests: XCTestCase {
         XCTAssertEqual(model.levels.count, 4)
         model.cancel()
         await waitFor("cancelled") { model.status == .cancelled }
-        XCTAssertEqual(model.results[.prefix]?.count, 2)
+        XCTAssertEqual(model.results[.curves(.prefix)]?.count, 2)
     }
 
     // MARK: Caption and export
@@ -1214,5 +1214,176 @@ final class FitModelTests: XCTestCase {
         let model = makeModel(Self.instantRunner(stages: 3))
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("never.svg")
         XCTAssertThrowsError(try model.exportSVG(to: url))
+    }
+
+    // MARK: Tiles
+
+    /// An 8×8 picture cut into halves, then the right half across, then the left: level k
+    /// is the tiling after k cuts. At the last level the tiles are top right [0, 0],
+    /// bottom right [0, 1], top left [1, 0] and bottom left [1, 1].
+    nonisolated static func tileLevels() -> [Level] {
+        var mesh = TileMesh(width: 8, height: 8, color: RGB(r: 0.5, g: 0.5, b: 0.5))
+        func level() -> Level {
+            var picture = NotanCore.Picture(
+                width: 8, height: 8, background: RGB(r: 0, g: 0, b: 0), shapes: [])
+            picture.tiles = mesh.tiles()
+            return Level(picture: picture, mse: 0.1)
+        }
+        var levels = [level()]
+        mesh.cut(0, from: CutEnd(edge: 0, t: 0.5), to: CutEnd(edge: 2, t: 0.5), stage: 1, shareCorners: false)
+        levels.append(level())
+        mesh.cut(1, from: CutEnd(edge: 3, t: 0.5), to: CutEnd(edge: 1, t: 0.5), stage: 2, shareCorners: false)
+        levels.append(level())
+        mesh.cut(2, from: CutEnd(edge: 1, t: 0.5), to: CutEnd(edge: 3, t: 0.5), stage: 3, shareCorners: false)
+        levels.append(level())
+        return levels
+    }
+
+    /// Fits tiles when asked for tiles, and three stages of circles otherwise.
+    nonisolated static func eitherRunner() -> FitRunner {
+        { target, settings, progress, isCancelled in
+            guard settings.kind == .tiles else {
+                return instantRunner(stages: 3)(target, settings, progress, isCancelled)
+            }
+            let levels = tileLevels()
+            for (stage, level) in levels.enumerated() {
+                progress(
+                    FitProgress(
+                        stage: stage, stageCount: 3, step: 10, stepCount: 10, picture: level.picture,
+                        finishedLevel: level))
+            }
+            return levels
+        }
+    }
+
+    /// A model with a finished tile fit, showing its last level.
+    func tiledModel() async -> FitModel {
+        let model = makeModel(Self.eitherRunner())
+        model.open(photoURL)
+        model.settings.kind = .tiles
+        model.start()
+        await waitFor("done") { model.status == .done }
+        return model
+    }
+
+    func testTileResultsAreKeptApartFromCurveResults() async {
+        let model = makeModel(Self.eitherRunner())
+        model.open(photoURL)
+        model.start()
+        await waitFor("curves done") { model.status == .done }
+        model.settings.kind = .tiles
+        XCTAssertTrue(model.isTiling)
+        XCTAssertTrue(model.levels.isEmpty)
+        model.start()
+        await waitFor("tiles done") { model.status == .done && model.levels.count == 4 }
+        XCTAssertEqual(model.shownPicture?.tiles.count, 4)
+        XCTAssertEqual(model.results[.curves(.refit)]?.count, 4)
+        XCTAssertEqual(model.results[model.variant]?.count, 4)
+        XCTAssertEqual(model.variant, Variant(kind: .tiles, order: .worst, mode: .refit))
+
+        model.settings.kind = .curves
+        XCTAssertEqual(model.levels.count, 4)
+        XCTAssertEqual(model.shownPicture?.tiles.count, 0)
+        XCTAssertEqual(model.shownPicture?.shapes.count, 3)
+    }
+
+    func testEachCutOrderKeepsItsOwnResult() async {
+        let model = await tiledModel()
+        model.settings.tileOrder = .tree
+        XCTAssertTrue(model.levels.isEmpty)
+        model.start()
+        await waitFor("tree done") { model.status == .done && model.levels.count == 4 }
+        XCTAssertEqual(model.results[Variant(kind: .tiles, order: .worst, mode: .refit)]?.count, 4)
+        XCTAssertEqual(model.results[Variant(kind: .tiles, order: .tree, mode: .refit)]?.count, 4)
+        // Curves have no cut order: changing it there is not another variant.
+        model.settings.kind = .curves
+        XCTAssertEqual(model.variant, .curves(.refit))
+    }
+
+    func testAFitIsFiledUnderTheVariantItStartedWith() async {
+        let model = makeModel(Self.hangingRunner(lateLevel: true))
+        model.open(photoURL)
+        model.start()
+        await waitFor("two levels") { model.results[.curves(.refit)]?.count == 2 }
+        model.settings.kind = .tiles
+        XCTAssertTrue(model.levels.isEmpty)
+        model.cancel()
+        await waitFor("cancelled") { model.status == .cancelled }
+        XCTAssertEqual(model.results[.curves(.refit)]?.count, 2)
+        XCTAssertNil(model.results[model.variant])
+    }
+
+    func testClickingATileSelectsIt() async {
+        let model = await tiledModel()
+        model.select(at: SIMD2(6, 2))
+        XCTAssertEqual(model.selected, [.tile([0, 0])])
+        model.select(at: SIMD2(2, 6), toggling: true)
+        XCTAssertEqual(model.selected, [.tile([0, 0]), .tile([1, 1])])
+        XCTAssertEqual(model.selectedTiles.map { $0.map(\.path) }, [[[0, 0]], [[1, 1]]])
+    }
+
+    func testParentSelectsTheTileItWasCutFrom() async {
+        let model = await tiledModel()
+        model.select(at: SIMD2(6, 2))
+        model.selectParent()
+        XCTAssertEqual(model.selected, [.tile([0])])
+        XCTAssertEqual(model.selectedTiles.map { $0.map(\.path) }, [[[0, 0], [0, 1]]])
+        // The tile above that is the whole picture, which is what no selection means.
+        model.selectParent()
+        XCTAssertEqual(model.selected, [])
+    }
+
+    func testSelectionFallsBackOnAnEarlierLevel() async {
+        let model = await tiledModel()
+        model.select(at: SIMD2(6, 2))
+        model.userMovedSlider(to: 1)
+        XCTAssertEqual(model.shownStop, 1)
+        XCTAssertEqual(model.selected, [.tile([0])])
+        model.userMovedSlider(to: 0)
+        XCTAssertEqual(model.selected, [])
+    }
+
+    func testSelectedTilesGroupsThePiecesOnALaterLevel() async {
+        let model = await tiledModel()
+        model.userMovedSlider(to: 1)
+        model.select(at: SIMD2(6, 2))
+        XCTAssertEqual(model.selected, [.tile([0])])
+        XCTAssertEqual(model.selectedTiles.map(\.count), [1])
+        model.userMovedSlider(to: 3)
+        XCTAssertEqual(model.selected, [.tile([0])])
+        XCTAssertEqual(model.selectedTiles.map(\.count), [2])
+        XCTAssertEqual(model.sliderStop, 3)
+        XCTAssertEqual(model.sliderLast, 3)
+    }
+
+    func testTilesCannotBeRefined() async {
+        let model = await tiledModel()
+        model.select(at: SIMD2(6, 2))
+        XCTAssertFalse(model.canRefine)
+        XCTAssertTrue(model.lockTree.isEmpty)
+        XCTAssertEqual(model.maxDepth, 0)
+    }
+
+    func testTileSelectionLabelAndCaption() async {
+        let model = await tiledModel()
+        XCTAssertEqual(model.selectionLabel, "Whole picture")
+        model.select(at: SIMD2(2, 6))
+        XCTAssertEqual(model.selectionLabel, "Tile 2 › 2")
+        model.select(at: SIMD2(6, 2), toggling: true)
+        XCTAssertEqual(model.selectionLabel, "2 tiles selected")
+        XCTAssertTrue(model.caption.hasPrefix("4 tiles · "))
+    }
+
+    func testTileFitShowsItsStageCount() async {
+        let model = makeModel(Self.hangingRunner())
+        model.open(photoURL)
+        model.settings.kind = .tiles
+        model.settings.tileOrder = .tree
+        model.settings.totalShapes = 32
+        model.start()
+        // Before the fit has reported anything: 1, 2, 4, 8, 16 cuts.
+        XCTAssertEqual(model.status, .fitting(stage: 0, stageCount: 5))
+        model.cancel()
+        await waitFor("cancelled") { model.status == .cancelled }
     }
 }

@@ -354,12 +354,56 @@ private func bitmap(width: Int, height: Int) -> CGContext? {
     return context
 }
 
-public func makeCGImage(_ picture: Picture, pixelSize: CGSize, maxDepth: Int = .max) -> CGImage? {
+public func makeCGImage(
+    _ picture: Picture, pixelSize: CGSize, maxDepth: Int = .max, dimmingAllBut selected: [Tile] = []
+) -> CGImage? {
     let width = max(1, Int(pixelSize.width.rounded()))
     let height = max(1, Int(pixelSize.height.rounded()))
     guard let context = bitmap(width: width, height: height) else { return nil }
-    draw(picture, in: context, size: CGSize(width: width, height: height), maxDepth: maxDepth)
+    let size = CGSize(width: width, height: height)
+    draw(picture, in: context, size: size, maxDepth: maxDepth)
+    dim(picture, allBut: selected, in: context, size: size)
     return context.makeImage()
+}
+
+/// How dark the rest of the picture is made when tiles are selected: the share of black.
+public let selectionDimming: CGFloat = 0.45
+
+/// Shows which tiles are selected by darkening the rest of a picture drawn to fill `size`
+/// (see `draw`) and drawing a line round them. A tile cut into pieces is a group: the
+/// line goes round the group, not between its pieces. Nothing is drawn when no tile is
+/// given.
+public func dim(_ picture: Picture, allBut tiles: [Tile], in context: CGContext, size: CGSize) {
+    guard !tiles.isEmpty else { return }
+    var transform = CGAffineTransform(
+        scaleX: size.width / CGFloat(picture.width), y: size.height / CGFloat(picture.height))
+    // The tiles as one area, so that the lines between neighbouring ones do not show;
+    // then everything but that area.
+    var kept: CGPath = CGMutablePath()
+    for tile in tiles {
+        // Grown by a hair, so that pieces sharing an edge overlap and join without a slit.
+        let grown = Tile(corners: grownPolygon(tile.corners, by: 0.02), color: tile.color, path: tile.path)
+        if let scaled = outline(of: grown).copy(using: &transform) {
+            kept = kept.union(scaled, using: .winding)
+        }
+    }
+    let rest = CGPath(rect: CGRect(origin: .zero, size: size), transform: nil)
+        .subtracting(kept, using: .winding)
+    context.saveGState()
+    context.setFillColor(CGColor(gray: 0, alpha: selectionDimming))
+    context.addPath(rest)
+    context.fillPath(using: .winding)
+    // And a line round the area, dark under light so that it shows on any colour: a dark
+    // tile among dark ones is otherwise hard to tell from its dimmed neighbours.
+    context.clip(to: CGRect(origin: .zero, size: size))
+    context.setLineJoin(.round)
+    for (width, color) in [(4.0, CGColor(gray: 0, alpha: 0.85)), (1.5, CGColor(gray: 1, alpha: 1))] {
+        context.setLineWidth(width)
+        context.setStrokeColor(color)
+        context.addPath(kept)
+        context.strokePath()
+    }
+    context.restoreGState()
 }
 
 /// How far the picture, drawn hard-edged, is from the target: the squared difference

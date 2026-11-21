@@ -24,8 +24,11 @@ public struct ContentView: View {
             Divider()
             HStack(spacing: 0) {
                 pictureArea
-                Divider()
-                lockPanel
+                // Refining, and so locking, is for curves.
+                if !model.isTiling {
+                    Divider()
+                    lockPanel
+                }
             }
             Divider()
             levelBar
@@ -61,7 +64,7 @@ public struct ContentView: View {
         VStack(spacing: 8) {
             HStack(spacing: 16) {
                 Button("Open…") { importing = true }
-                Picker("Shapes", selection: $model.settings.totalShapes) {
+                Picker(model.isTiling ? "Tiles" : "Shapes", selection: $model.settings.totalShapes) {
                     ForEach(FitModel.shapeChoices, id: \.self) { Text("\($0)").tag($0) }
                 }
                 .fixedSize()
@@ -76,15 +79,19 @@ public struct ContentView: View {
                 }
                 .fixedSize()
                 .help(
-                    "Keeps shapes from thinning into slivers and spikes. The value is the narrowest allowed at the last level; earlier shapes must be wider."
+                    model.isTiling
+                        ? "Keeps tiles from being cut into slivers: no cut may leave a piece thinner than this."
+                        : "Keeps shapes from thinning into slivers and spikes. The value is the narrowest allowed at the last level; earlier shapes must be wider."
                 )
                 Toggle("Avoid folds", isOn: $model.settings.avoidFolds)
                     .toggleStyle(.checkbox)
+                    .disabled(model.isTiling)
                     .help(
                         "Keeps shapes from crossing over themselves into bow-ties, loops and folded lobes. Dents and bulges are unaffected; shapes curled most of the way round something are discouraged."
                     )
                 Toggle("Gradients", isOn: $model.settings.gradients)
                     .toggleStyle(.checkbox)
+                    .disabled(model.isTiling)
                     .help(
                         "Fills each shape with a linear gradient between two colours instead of one flat colour. Smooth areas such as sky come closer to the photo; each shape costs 11 more bytes."
                     )
@@ -100,6 +107,27 @@ public struct ContentView: View {
             }
             .disabled(model.isFitting)
             HStack(spacing: 16) {
+                Picker("Kind", selection: $model.settings.kind) {
+                    Text("Curves").tag(ShapeKind.curves)
+                    Text("Tiles").tag(ShapeKind.tiles)
+                }
+                .pickerStyle(.segmented)
+                .fixedSize()
+                .help(
+                    "Curves: curved shapes laid over one another. Tiles: straight-edged tiles that share edges and never overlap, made by cutting the picture again and again. Each keeps its own result."
+                )
+                .disabled(model.isRefining)
+                if model.isTiling {
+                    Picker("Cuts", selection: $model.settings.tileOrder) {
+                        Text("Strict tree").tag(TileOrder.tree)
+                        Text("Worst first").tag(TileOrder.worst)
+                    }
+                    .pickerStyle(.segmented)
+                    .fixedSize()
+                    .help(
+                        "Strict tree: every tile is cut once more at each level. Worst first: the tiles that gain most are cut first."
+                    )
+                }
                 Picker("Levels", selection: $model.settings.mode) {
                     Text("Re-fit").tag(LevelMode.refit)
                     Text("Prefix").tag(LevelMode.prefix)
@@ -107,21 +135,31 @@ public struct ContentView: View {
                 .pickerStyle(.segmented)
                 .fixedSize()
                 .help(
-                    "Re-fit: every level is re-optimised as a whole. Prefix: each level is exactly the first shapes of the next."
+                    model.isTiling
+                        ? "Re-fit: every corner keeps moving at every level. Prefix: a tile's outline is fixed once it is cut, so each level's tiles are made up exactly of the next level's."
+                        : "Re-fit: every level is re-optimised as a whole. Prefix: each level is exactly the first shapes of the next."
                 )
                 .disabled(model.isRefining)
                 Divider().frame(height: 16)
                 Text(model.selectionLabel)
                     .foregroundStyle(model.selected.isEmpty ? .secondary : .primary)
-                    .help("Click a shape, or a gap between shapes, to select it; Shift-click to add one to the selection or take it out; click outside the picture or press Esc to select the whole picture again.")
+                    .help(
+                        model.isTiling
+                            ? "Click a tile to select it; Shift-click to add one to the selection or take it out; click outside the picture or press Esc to select the whole picture again. A selected tile stays selected as you move through the levels."
+                            : "Click a shape, or a gap between shapes, to select it; Shift-click to add one to the selection or take it out; click outside the picture or press Esc to select the whole picture again.")
                 Button("Parent") { model.selectParent() }
                     .disabled(model.selection == nil || model.isFitting)
-                    .help("Select the shape this one was fitted inside. Needs exactly one shape selected.")
+                    .help(
+                        model.isTiling
+                            ? "Select the tile this one was cut from. Needs exactly one tile selected."
+                            : "Select the shape this one was fitted inside. Needs exactly one shape selected.")
                 Spacer()
                 Button("Refine selection") { model.refine() }
                     .disabled(!model.canRefine)
                     .help(
-                        "Fit finer shapes only inside each selected shape, zoomed into that part of the photo, using the settings above. Several shapes are refined side by side."
+                        model.isTiling
+                            ? "Refining is for curves. To cut tiles further, fit again with more tiles."
+                            : "Fit finer shapes only inside each selected shape, zoomed into that part of the photo, using the settings above. Several shapes are refined side by side."
                     )
                 // Return starts a fit, but must not restart one that is already running.
                 Button(model.isFitting ? "Restart" : "Start") { model.start() }
@@ -141,7 +179,7 @@ public struct ContentView: View {
                 showsOriginal: holdingOriginal || (model.shownPicture == nil && original != nil),
                 maxDepth: model.shownDepth, selectedShapes: model.selectedShapes,
                 backgroundSelected: model.backgroundSelected,
-                selectedGapMasks: model.selectedGapMasks,
+                selectedGapMasks: model.selectedGapMasks, selectedTiles: model.selectedTiles,
                 onClick: { model.select(at: $0, toggling: $1) })
             if model.photoURL == nil {
                 Text("Drop a photo here")
@@ -217,9 +255,12 @@ public struct ContentView: View {
     private var levelBar: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
-                Text(model.selected.isEmpty ? "Level" : "Level in selection")
+                Text(model.selected.isEmpty || model.isTiling ? "Level" : "Level in selection")
                     .frame(minWidth: 116, alignment: .leading)
-                    .help("Steps through the levels of the selected shape, or of the whole picture when nothing is selected. With several shapes selected it is off.")
+                    .help(
+                        model.isTiling
+                            ? "Steps through the levels of the picture. Selected tiles stay selected: on a later level as the pieces they were cut into, on an earlier one as the tile they were cut from."
+                            : "Steps through the levels of the selected shape, or of the whole picture when nothing is selected. With several shapes selected it is off.")
                 Slider(
                     value: Binding(
                         get: { Double(model.sliderStop) },
@@ -231,6 +272,8 @@ public struct ContentView: View {
                     .monospacedDigit()
                     .frame(minWidth: 64, alignment: .trailing)
             }
+            // Depth is about refinements, which tiles do not have.
+            if !model.isTiling {
             HStack(spacing: 12) {
                 Text("Depth")
                     .frame(minWidth: 116, alignment: .leading)
@@ -245,6 +288,7 @@ public struct ContentView: View {
                 Text(model.levels.isEmpty ? "" : "\(model.shownDepth) of \(model.maxDepth)")
                     .monospacedDigit()
                     .frame(minWidth: 64, alignment: .trailing)
+            }
             }
             HStack(spacing: 12) {
                 Text(model.caption.isEmpty ? " " : model.caption)

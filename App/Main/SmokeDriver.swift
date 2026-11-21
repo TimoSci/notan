@@ -59,6 +59,68 @@
             await pause(0.5)
             snapshot("2-opened")
 
+            // With NOTAN_SMOKE_TILES set, the tile mode is driven instead of the curves.
+            if environment["NOTAN_SMOKE_TILES"] != nil {
+                model.settings.kind = .tiles
+                model.settings.totalShapes = 64
+                await pause(0.3)
+                snapshot("t1-tiles-chosen")
+                model.start()
+                await wait("tiles worst refit: 3 levels") { model.levels.count >= 3 }
+                snapshot("t2-fitting")
+                await wait("tiles worst refit: done") { model.status == .done }
+                snapshot("t3-worst-refit-last")
+                model.userMovedSlider(to: model.levels.count / 2)
+                await pause(0.2)
+                snapshot("t4-middle")
+                if let picture = model.shownPicture {
+                    model.select(at: SIMD2(Float(picture.width) * 0.5, Float(picture.height) * 0.6))
+                }
+                await pause(0.2)
+                snapshot("t5-tile-selected")
+                note("selected: \(model.selectionLabel), canRefine=\(model.canRefine)")
+                model.selectParent()
+                await pause(0.2)
+                snapshot("t6-parent")
+                note("parent: \(model.selectionLabel)")
+                model.userMovedSlider(to: model.levels.count - 1)
+                await pause(0.2)
+                snapshot("t7-same-tile-last-level")
+                note("on last level: \(model.selectionLabel), pieces=\(model.selectedTiles.map(\.count))")
+                model.userMovedSlider(to: 1)
+                await pause(0.2)
+                snapshot("t8-fallen-back")
+                note("on level 1: \(model.selectionLabel)")
+                model.select(at: nil)
+
+                model.settings.tileOrder = .tree
+                model.settings.mode = .prefix
+                model.start()
+                await wait("tiles tree prefix: stage 3 running") {
+                    if case .fitting(let stage, _) = model.status { return stage >= 3 }
+                    return false
+                }
+                model.start()  // Restart while fitting
+                await wait("tiles tree prefix: done") { model.status == .done }
+                snapshot("t9-tree-prefix-last")
+                do {
+                    try model.exportSVG(to: folder.appendingPathComponent("tiles.svg"))
+                    note("exported level \(model.shownStop)")
+                } catch {
+                    note("export failed: \(error.localizedDescription)")
+                }
+                model.settings.tileOrder = .worst
+                model.settings.mode = .refit
+                await pause(0.2)
+                snapshot("t10-back-to-worst-refit")
+                model.settings.kind = .curves
+                await pause(0.2)
+                snapshot("t11-curves-nothing-fitted")
+                note("finished")
+                NSApp.terminate(nil)
+                return
+            }
+
             model.settings.totalShapes = 32
             model.settings.gradients = environment["NOTAN_SMOKE_GRADIENTS"] != nil
             model.start()
