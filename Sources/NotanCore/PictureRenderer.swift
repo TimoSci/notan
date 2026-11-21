@@ -20,6 +20,21 @@ public func outline(of shape: Shape) -> CGPath {
     return path
 }
 
+/// The closed outline of a tile, in the picture's own pixel coordinates.
+public func outline(of tile: Tile) -> CGPath {
+    let path = CGMutablePath()
+    path.addLines(between: tile.corners.map { CGPoint(x: CGFloat($0.x), y: CGFloat($0.y)) })
+    path.closeSubpath()
+    return path
+}
+
+/// Each tile is drawn grown by half this much, in output pixels: as if outlined this wide
+/// in its own colour. Two antialiased fills that meet along an edge each cover only part
+/// of the pixels on it, and would let what lies beneath show through as a hairline. Grown,
+/// neighbours overlap by half a pixel each way, so every pixel on a shared edge is wholly
+/// covered by one of the two and nothing shows through.
+public let tileSeamWidth: CGFloat = 1
+
 private func cgColor(_ color: RGB) -> CGColor {
     func unit(_ v: Float) -> CGFloat { CGFloat(min(max(v, 0), 1)) }
     return CGColor(srgbRed: unit(color.r), green: unit(color.g), blue: unit(color.b), alpha: 1)
@@ -146,8 +161,27 @@ private struct Painter {
         for (index, shape) in picture.shapes.enumerated() {
             paint(shape, node: .shape([index]), in: context, depthLeft: maxDepth)
         }
+        paint(picture.tiles, in: context)
         for (index, area) in picture.locked.enumerated() {
             paint(area, number: index, in: context, maxDepth: maxDepth)
+        }
+    }
+
+    private func paint(_ tiles: [Tile], in context: CGContext) {
+        guard !tiles.isEmpty else { return }
+        // The outline's width is given in output pixels; the context is scaled to the picture's.
+        let matrix = context.ctm
+        let scale = max(hypot(matrix.a, matrix.b), hypot(matrix.c, matrix.d), 1e-6)
+        for tile in tiles {
+            // Tile and outline as one area, filled once. Filling and then stroking would
+            // be two antialiased layers, and a little would still show through between them.
+            let path = outline(of: tile)
+            let band = path.copy(
+                strokingWithWidth: tileSeamWidth / scale, lineCap: .butt, lineJoin: .round,
+                miterLimit: 1)
+            context.setFillColor(color(tile.color, for: .tile(tile.path)))
+            context.addPath(path.union(band, using: .winding))
+            context.fillPath(using: .winding)
         }
     }
 
@@ -328,6 +362,20 @@ public func makeCGImage(_ picture: Picture, pixelSize: CGSize, maxDepth: Int = .
     return context.makeImage()
 }
 
+/// How far the picture, drawn hard-edged at the target's size, is from the target: the
+/// squared difference averaged over every channel of every pixel, as `plainMSE` gives.
+public func measuredMSE(_ picture: Picture, against target: TargetImage) -> Float {
+    let drawn = renderRegion(
+        picture, region: CGRect(x: 0, y: 0, width: picture.width, height: picture.height),
+        width: target.width, height: target.height)
+    var sum: Double = 0
+    for index in drawn.indices {
+        let difference = Double(drawn[index] - target.pixels[index])
+        sum += difference * difference
+    }
+    return Float(sum / Double(max(drawn.count, 1)))
+}
+
 /// The part of the picture inside `region` (picture coordinates), drawn at width × height
 /// pixels: row-major RGB 0…1, top row first. Used to zoom into one region for refining.
 public func renderRegion(
@@ -382,6 +430,17 @@ extension Picture {
             }
         }
         let location = CGPoint(x: CGFloat(point.x), y: CGFloat(point.y))
+        if !tiles.isEmpty {
+            if let tile = tiles.first(where: { outline(of: $0).contains(location, using: .winding) }) {
+                return .tile(tile.path)
+            }
+            // On an edge, by rounding, in no tile: the tile whose middle is nearest.
+            func distance(_ tile: Tile) -> Float {
+                let middle = tile.corners.reduce(SIMD2<Float>(0, 0), +) / Float(max(tile.corners.count, 1))
+                return ((middle - point) * (middle - point)).sum()
+            }
+            return tiles.min { distance($0) < distance($1) }.map { .tile($0.path) }
+        }
         func find(in list: [Shape], parent: NodeID?, depthLeft: Int) -> NodeID? {
             for index in list.indices.reversed() {
                 let shape = list[index]

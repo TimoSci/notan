@@ -105,6 +105,16 @@ public func svg(_ picture: Picture, outputSize: CGSize, maxDepth: Int = .max) ->
         }
     }
     write(picture.shapes, depthLeft: maxDepth)
+    // Each tile is outlined in its own colour, so that neighbours overlap a little and no
+    // hairline of the background shows between them. The width is in output pixels.
+    let seam = Float(tileSeamWidth) * Float(picture.width) / Float(max(outputSize.width, 1))
+    for tile in picture.tiles {
+        let points = tile.corners.map { "\(number($0.x)),\(number($0.y))" }.joined(separator: " ")
+        let color = hex(tile.color)
+        lines.append(
+            "<polygon points=\"\(points)\" fill=\"\(color)\" stroke=\"\(color)\" "
+                + "stroke-width=\"\(number(seam))\" stroke-linejoin=\"round\"/>")
+    }
 
     let size = "width=\"\(picture.width)\" height=\"\(picture.height)\""
     for area in picture.locked {

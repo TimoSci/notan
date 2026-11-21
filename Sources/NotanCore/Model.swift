@@ -106,17 +106,28 @@ public struct NodeID: Hashable, Sendable {
     public var path: [Int]
     /// Which of the picture's locked areas the region lies in; nil for the picture itself.
     public var locked: Int?
+    /// True for a tile of a tiling. `path` is then the tile's place in the tree of cuts
+    /// (see `Tile.path`), and an empty path is the whole picture.
+    public var isTile = false
 
-    public init(inBackground: Bool, gap: Int = 0, path: [Int], locked: Int? = nil) {
+    public init(
+        inBackground: Bool, gap: Int = 0, path: [Int], locked: Int? = nil, isTile: Bool = false
+    ) {
         self.inBackground = inBackground
         self.gap = inBackground ? gap : 0
         self.path = path
         self.locked = locked
+        self.isTile = isTile
     }
 
     /// The same region of the picture of locked area `index`; nil for a picture's own.
     public func inLocked(_ index: Int?) -> NodeID {
-        NodeID(inBackground: inBackground, gap: gap, path: path, locked: index)
+        NodeID(inBackground: inBackground, gap: gap, path: path, locked: index, isTile: isTile)
+    }
+
+    /// The tile at `path` in the tree of cuts, or the group of tiles it has been cut into.
+    public static func tile(_ path: [Int]) -> NodeID {
+        NodeID(inBackground: false, path: path, isTile: true)
     }
 
     /// The whole uncovered area, for a picture whose gaps are not told apart. Same as gap 0.
@@ -132,12 +143,16 @@ public struct NodeID: Hashable, Sendable {
     public var isBackground: Bool { inBackground && path.isEmpty }
 
     public func child(_ index: Int) -> NodeID {
-        NodeID(inBackground: inBackground, gap: gap, path: path + [index], locked: locked)
+        NodeID(
+            inBackground: inBackground, gap: gap, path: path + [index], locked: locked,
+            isTile: isTile)
     }
 
     /// The region this one was fitted inside; nil for a gap and for the picture's own shapes.
+    /// For a tile, the tile it was cut from; nil for the whole picture.
     public var parent: NodeID? {
         guard !path.isEmpty else { return nil }
+        if isTile { return .tile(Array(path.dropLast())) }
         if path.count == 1 { return inBackground ? NodeID.gap(gap).inLocked(locked) : nil }
         return NodeID(
             inBackground: inBackground, gap: gap, path: Array(path.dropLast()), locked: locked)
@@ -146,6 +161,7 @@ public struct NodeID: Hashable, Sendable {
     /// True if `other` is this node or lies inside it.
     public func contains(_ other: NodeID) -> Bool {
         locked == other.locked && inBackground == other.inBackground && gap == other.gap
+            && isTile == other.isTile
             && other.path.starts(with: path)
     }
 }
@@ -196,6 +212,9 @@ public struct Picture: Equatable, Sendable {
     public var gaps: [Gap]
     /// Areas of earlier levels painted over everything else, in order.
     public var locked: [LockedArea] = []
+    /// The tiles of a tiling, which between them cover the picture. A picture fitted with
+    /// tiles has these and no shapes.
+    public var tiles: [Tile] = []
 
     public init(
         width: Int, height: Int, background: RGB, shapes: [Shape], backgroundInner: Inner? = nil,
@@ -229,8 +248,34 @@ public struct Picture: Equatable, Sendable {
 
     public func estimatedBytes(maxDepth: Int) -> Int {
         // A gradient adds a second colour and two points.
-        3 + shapeCount(maxDepth: maxDepth) * 51 + gradientCount(maxDepth: maxDepth) * 11
-            + (gaps.count > 1 ? gaps.count * 3 : 0)
+        3 + (shapeCount(maxDepth: maxDepth) - tiles.count) * 51
+            + gradientCount(maxDepth: maxDepth) * 11 + (gaps.count > 1 ? gaps.count * 3 : 0)
+            + tileBytes
+    }
+
+    /// A tile costs its 3 colour bytes; each corner, stored once however many tiles share
+    /// it, costs 2 coordinates of 2 bytes.
+    private var tileBytes: Int {
+        guard !tiles.isEmpty else { return 0 }
+        var corners = Set<SIMD2<Float>>()
+        for tile in tiles { corners.formUnion(tile.corners) }
+        return tiles.count * 3 + corners.count * 4
+    }
+
+    /// The tiles a tile address stands for in this picture: those cut from it, or itself;
+    /// failing that, the one tile it would be cut from. None for any other kind of region.
+    public func tiles(under node: NodeID) -> [Tile] {
+        guard node.isTile else { return [] }
+        let below = tiles.filter { $0.path.starts(with: node.path) }
+        if !below.isEmpty { return below }
+        return tiles.filter { node.path.starts(with: $0.path) }
+    }
+
+    /// The address to show for a tile address in this picture: itself when it names a tile
+    /// or a group of tiles here, else the tile that contains it, else nil.
+    public func resolved(_ node: NodeID) -> NodeID? {
+        guard let first = tiles(under: node).first else { return nil }
+        return first.path.starts(with: node.path) ? node : .tile(first.path)
     }
 
     /// The number of shapes drawn with a gradient when refinements deeper than `maxDepth`
@@ -264,7 +309,7 @@ public struct Picture: Equatable, Sendable {
 
     /// The number of shapes drawn when refinements deeper than `maxDepth` are hidden.
     public func shapeCount(maxDepth: Int) -> Int {
-        var total = Picture.count(shapes, depthLeft: maxDepth)
+        var total = Picture.count(shapes, depthLeft: maxDepth) + tiles.count
         if maxDepth > 0 {
             for gap in gaps {
                 total += Picture.count(gap.inner?.shapes ?? [], depthLeft: maxDepth - 1)
