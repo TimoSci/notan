@@ -430,3 +430,20 @@ public func stageSchedule(totalShapes: Int) -> [Int] {
     }
     return schedule
 }
+
+/// One tile of a tiling: a straight-edged polygon in one flat colour. Tiles share edges
+/// with their neighbours and do not overlap.
+public struct Tile: Equatable, Sendable {
+    /// In order round the tile, in working-image pixels.
+    public var corners: [SIMD2<Float>]
+    public var color: RGB
+    /// Where the tile sits in the tree of cuts: at each cut from the whole picture down,
+    /// 0 for the first piece or 1 for the second. Empty for the whole picture.
+    public var path: [Int]
+
+    public init(corners: [SIMD2<Float>], color: RGB, path: [Int]) {
+        self.corners = corners
+        self.color = color
+        self.path = path
+    }
+}
