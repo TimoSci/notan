@@ -42,4 +42,13 @@ public struct Adam {
         eval(first + second)
         return updated
     }
+
+    /// Drops the momentum of some elements of one parameter: `keeping`, the same shape as
+    /// the parameter, is 0 for those and 1 for the rest. For elements whose last step was
+    /// undone, so that the next step does not simply make the same move again.
+    public mutating func forget(parameter: Int, keeping: MLXArray) {
+        guard first.indices.contains(parameter) else { return }
+        first[parameter] = first[parameter] * keeping
+        eval(first[parameter])
+    }
 }

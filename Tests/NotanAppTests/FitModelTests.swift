@@ -1301,16 +1301,62 @@ final class FitModelTests: XCTestCase {
     }
 
     func testAFitIsFiledUnderTheVariantItStartedWith() async {
-        let model = makeModel(Self.hangingRunner(lateLevel: true))
+        // A tile fit that reports its first two levels, waits until told, then reports the
+        // rest and finishes: the kind is changed while it waits.
+        final class Gate: @unchecked Sendable {
+            private let lock = NSLock()
+            private var opened = false
+            var isOpen: Bool {
+                lock.lock()
+                defer { lock.unlock() }
+                return opened
+            }
+            func open() {
+                lock.lock()
+                opened = true
+                lock.unlock()
+            }
+        }
+        let gate = Gate()
+        let model = makeModel { _, _, progress, _ in
+            let levels = Self.tileLevels()
+            for (stage, level) in levels.enumerated() {
+                if stage == 2 { while !gate.isOpen { Thread.sleep(forTimeInterval: 0.002) } }
+                progress(
+                    FitProgress(
+                        stage: stage, stageCount: 3, step: 10, stepCount: 10, picture: level.picture,
+                        finishedLevel: level))
+            }
+            return levels
+        }
         model.open(photoURL)
-        model.start()
-        await waitFor("two levels") { model.results[.curves(.refit)]?.count == 2 }
         model.settings.kind = .tiles
+        let started = model.variant
+        model.start()
+        await waitFor("two levels") { model.results[started]?.count == 2 }
+
+        model.settings.kind = .curves
         XCTAssertTrue(model.levels.isEmpty)
+        gate.open()
+        await waitFor("done") { model.status == .done }
+        XCTAssertEqual(model.results[started]?.count, 4, "the levels reported after the change too")
+        XCTAssertNil(model.results[.curves(.refit)])
+        XCTAssertTrue(model.levels.isEmpty)
+        XCTAssertEqual(model.shownStop, 0, "the slider does not follow a fit of another variant")
+    }
+
+    func testRestartingATileFitStartsItsResultAfresh() async {
+        let model = makeModel(Self.hangingRunner())
+        model.open(photoURL)
+        model.settings.kind = .tiles
+        model.start()
+        await waitFor("two levels") { model.results[model.variant]?.count == 2 }
+        model.start()
+        XCTAssertEqual(model.results[model.variant]?.count, 0)
+        await waitFor("two levels again") { model.results[model.variant]?.count == 2 }
+        XCTAssertNil(model.results[.curves(.refit)])
         model.cancel()
         await waitFor("cancelled") { model.status == .cancelled }
-        XCTAssertEqual(model.results[.curves(.refit)]?.count, 2)
-        XCTAssertNil(model.results[model.variant])
     }
 
     func testClickingATileSelectsIt() async {

@@ -220,6 +220,61 @@ final class TileFitterTests: XCTestCase {
         XCTAssertEqual(mesh.points, previous)
     }
 
+    func testRevertGoesNoFurtherThanTheTilesItBreaks() {
+        // As above, with the right strip cut across as well: one end of that cut lies on
+        // the right border, in tiles that never become unsound.
+        var mesh = strips()
+        let rightStrip = mesh.leaves.first { mesh.polygon($0).contains(SIMD2(64, 0)) }!
+        let edge = mesh.polygon(rightStrip).firstIndex(of: SIMD2(64, 0))!
+        let opposite = mesh.polygon(rightStrip).firstIndex(of: SIMD2(48, 48))!
+        mesh.cut(
+            rightStrip, from: CutEnd(edge: edge, t: 0.5), to: CutEnd(edge: opposite, t: 0.5), stage: 3,
+            shareCorners: true)
+        let onBorder = mesh.points.firstIndex(of: SIMD2(64, 24))!
+        XCTAssertEqual(mesh.invalidLeaves(minArea: 1), [])
+        let previous = mesh.points
+        mesh.setPoint(7, SIMD2(16, 100))
+        mesh.setPoint(4, SIMD2(10, 0))
+        mesh.setPoint(8, SIMD2(20, 0))
+        mesh.setPoint(onBorder, SIMD2(64, 25))
+        let reverted = revertInvalid(&mesh, previous: previous, minArea: 1)
+        XCTAssertEqual(mesh.invalidLeaves(minArea: 1), [])
+        XCTAssertEqual(mesh.points[7], previous[7])
+        XCTAssertEqual(mesh.points[4], previous[4])
+        XCTAssertEqual(mesh.points[8], previous[8])
+        XCTAssertEqual(mesh.points[onBorder], SIMD2(64, 25), "a sound move far from the damage stands")
+        XCTAssertTrue(reverted.contains(8))
+        XCTAssertFalse(reverted.contains(onBorder))
+    }
+
+    func testRevertPutsBackATileThatHasGrownTooThin() {
+        var mesh = strips()
+        let previous = mesh.points
+        // The line at x = 48 moved to 62.5: the right strip is 1.5 px wide, and sound otherwise.
+        mesh.setPoint(8, SIMD2(62.5, 0))
+        mesh.setPoint(9, SIMD2(62.5, 48))
+        XCTAssertEqual(mesh.invalidLeaves(minArea: 1), [])
+        XCTAssertEqual(mesh.invalidLeaves(minArea: 1, minThickness: 3).count, 1)
+        revertInvalid(&mesh, previous: previous, minArea: 1, minThickness: 3)
+        XCTAssertEqual(mesh.points, previous)
+    }
+
+    func testNoTileEndsThinnerThanTheMinimumWidth() {
+        let big = makeTarget(width: 48, height: 48) { x, y in
+            let n = Int(x) * 73 + Int(y) * 151
+            return RGB(r: Float(n % 17) / 16, g: Float(n * 7 % 13) / 12, b: Float(n * 3 % 11) / 10)
+        }
+        for mode in LevelMode.allCases {
+            var settings = settings(16, .worst, mode, steps: 40)
+            settings.minWidth = 16  // at 48 px that is 3 px
+            for level in fit(big, settings) {
+                for tile in level.picture.tiles {
+                    XCTAssertGreaterThanOrEqual(thickness(of: tile.corners), 3 - 0.01, "\(mode) \(tile.path)")
+                }
+            }
+        }
+    }
+
     func testRevertLeavesASoundTilingAlone() {
         var mesh = strips()
         let previous = mesh.points

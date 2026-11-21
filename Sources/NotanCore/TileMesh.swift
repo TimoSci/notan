@@ -224,12 +224,14 @@ public struct TileMesh: Equatable, Sendable {
 
     public mutating func setColor(_ node: Int, _ color: RGB) { nodes[node].color = color }
 
-    /// The uncut tiles that are not sound: outline crossing itself, or area below `minArea`
-    /// (which includes a tile turned inside out).
-    public func invalidLeaves(minArea: Float) -> [Int] {
+    /// The uncut tiles that are not sound: outline crossing itself, area below `minArea`
+    /// (which includes a tile turned inside out, or with a corner that is not a number),
+    /// or thinner than `minThickness` (see `thickness(of:)`).
+    public func invalidLeaves(minArea: Float, minThickness: Float = 0) -> [Int] {
         leaves.filter {
             let polygon = polygon($0)
-            return polygonArea(polygon) < minArea || !isSimplePolygon(polygon)
+            return !(polygonArea(polygon) >= minArea) || !isSimplePolygon(polygon)
+                || (minThickness > 0 && !(thickness(of: polygon) >= minThickness))
         }
     }
 

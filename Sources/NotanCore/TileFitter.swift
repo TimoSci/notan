@@ -272,9 +272,18 @@ public struct TileFitter {
                 if sharesCorners {
                     // A step may push a corner across a neighbouring tile. Those corners go
                     // back, and the tiling stays one.
-                    let stepped = mesh.points
-                    revertInvalid(&mesh, previous: before, minArea: 1)
-                    if mesh.points != stepped { parameters[0] = pointsArray(mesh.points[...]) }
+                    let reverted = revertInvalid(
+                        &mesh, previous: before, minArea: 1, minThickness: minThickness)
+                    if !reverted.isEmpty {
+                        parameters[0] = pointsArray(mesh.points[...])
+                        // Or the next step would only make the same move again.
+                        var keeping = [Float](repeating: 1, count: mesh.points.count * 2)
+                        for point in reverted {
+                            keeping[point * 2] = 0
+                            keeping[point * 2 + 1] = 0
+                        }
+                        adam.forget(parameter: 0, keeping: MLXArray(keeping, [mesh.points.count, 2]))
+                    }
                 }
                 if step % Fitter.progressInterval == 0 && step < settings.stepsPerStage {
                     progress(
@@ -306,18 +315,27 @@ public struct TileFitter {
 }
 
 /// Puts back the corners of tiles that a step has left unsound: crossing themselves,
-/// turned inside out or smaller than `minArea`. `previous` holds every point's position
-/// before the step, when the tiling was sound.
+/// turned inside out, smaller than `minArea` or thinner than `minThickness`. `previous`
+/// holds every point's position before the step, when the tiling was sound. Returns the
+/// points that were put back.
 ///
-/// Only the corners of the unsound tiles go back, so the rest of the step stands. A tile
-/// that was sound only thanks to a neighbour's move may be unsound after that; then every
-/// point goes back.
-func revertInvalid(_ mesh: inout TileMesh, previous: [SIMD2<Float>], minArea: Float) {
-    let broken = mesh.invalidLeaves(minArea: minArea)
-    guard !broken.isEmpty else { return }
-    for leaf in broken {
-        for corner in mesh.nodes[leaf].corners { mesh.setPoint(corner, previous[corner]) }
+/// Only the corners of unsound tiles go back, so the rest of the step stands. A tile that
+/// was sound only thanks to a neighbour's move may be unsound after that, so this is
+/// repeated until every tile is sound. At worst every point ends up back where it was.
+@discardableResult
+func revertInvalid(
+    _ mesh: inout TileMesh, previous: [SIMD2<Float>], minArea: Float, minThickness: Float = 0
+) -> [Int] {
+    var reverted: Set<Int> = []
+    while true {
+        let corners = Set(
+            mesh.invalidLeaves(minArea: minArea, minThickness: minThickness)
+                .flatMap { mesh.nodes[$0].corners })
+        let fresh = corners.subtracting(reverted)
+        // Nothing unsound, or nothing left to put back.
+        if fresh.isEmpty { break }
+        for corner in fresh { mesh.setPoint(corner, previous[corner]) }
+        reverted.formUnion(fresh)
     }
-    guard !mesh.invalidLeaves(minArea: minArea).isEmpty else { return }
-    for index in previous.indices { mesh.setPoint(index, previous[index]) }
+    return reverted.sorted()
 }

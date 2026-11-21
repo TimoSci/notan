@@ -34,4 +34,19 @@ final class AdamTests: XCTestCase {
         XCTAssertNotEqual(updated[0].item(Float.self), 1)
         XCTAssertEqual(updated[1].item(Float.self), 1)
     }
+
+    func testForgettingDropsTheMomentumOfTheChosenElements() {
+        var adam = Adam(learningRates: [0.5])
+        var x = MLXArray([10.0, 10.0] as [Float])
+        for _ in 0..<3 {
+            x = adam.step(parameters: [x], gradients: [MLXArray([4.0, 4.0] as [Float])])[0]
+        }
+        adam.forget(parameter: 0, keeping: MLXArray([0.0, 1.0] as [Float]))
+        let before = x.asArray(Float.self)
+        // With no gradient, only what still has momentum keeps moving.
+        let after = adam.step(parameters: [x], gradients: [MLXArray([0.0, 0.0] as [Float])])[0]
+            .asArray(Float.self)
+        XCTAssertEqual(after[0], before[0], accuracy: 1e-6)
+        XCTAssertLessThan(after[1], before[1] - 0.1)
+    }
 }
