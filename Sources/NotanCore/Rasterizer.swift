@@ -127,7 +127,25 @@ public struct Rasterizer {
         over base: (image: MLXArray, boundaryDistance: MLXArray)? = nil, mask: MLXArray? = nil,
         gradients: (axes: MLXArray, endColors: MLXArray)? = nil
     ) -> (image: MLXArray, boundaryDistance: MLXArray) {
-        let shapeCount = points.dim(0)
+        // Each shape's outline as a closed polygon: for every edge its start x, start y,
+        // end x and end y.
+        let edges = concatenated(
+            [matmul(basisStart, points), matmul(basisEnd, points)], axis: -1)  // [P, E, 4]
+        return render(
+            edges: edges, colors: colors, background: background, crops: crops, over: base,
+            mask: mask, gradients: gradients)
+    }
+
+    /// As `render(points:…)`, for shapes given directly as closed polygons: `edges`
+    /// [P, E, 4] holds the start x, start y, end x and end y of every edge of each shape,
+    /// each edge starting where the one before it ended. All shapes have the same number
+    /// of edges. This is how straight-edged tiles are rendered.
+    public func render(
+        edges allEdges: MLXArray, colors: MLXArray, background: MLXArray, crops: [PixelRect]? = nil,
+        over base: (image: MLXArray, boundaryDistance: MLXArray)? = nil, mask: MLXArray? = nil,
+        gradients: (axes: MLXArray, endColors: MLXArray)? = nil
+    ) -> (image: MLXArray, boundaryDistance: MLXArray) {
+        let shapeCount = allEdges.dim(0)
         precondition(crops == nil || crops!.count == shapeCount)
         let baseImage =
             base?.image ?? MLXArray.zeros([height, width, 3]) + background.reshaped(1, 1, 3)
@@ -144,13 +162,8 @@ public struct Rasterizer {
         func drawn(_ array: MLXArray) -> MLXArray {
             drawnCount == shapeCount ? array : take(array, drawnIndices, axis: 0)
         }
-        // Each drawn shape's outline as a closed polygon: for every edge its start x, start
-        // y, end x and end y.
-        let outline = drawn(points)
-        let edges = concatenated(
-            [matmul(basisStart, outline), matmul(basisEnd, outline)], axis: -1)  // [P', E, 4]
         return RasterKernels.paint(
-            edges: edges, colors: drawn(colors),
+            edges: drawn(allEdges), colors: drawn(colors),
             fills: gradients.map { (drawn($0.endColors), drawn($0.axes)) },
             base: (baseImage, baseBoundary), mask: mask, layout: layout, softness: softness)
     }

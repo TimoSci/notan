@@ -25,6 +25,9 @@ public struct LossConfig: Sendable {
     /// How much of a shape may sweep backward round its centre before the fold penalty
     /// applies. Long curved shapes sweep back a little without crossing themselves.
     public var foldTolerance: Float = 0
+    /// Weight of the penalty that keeps a tile from shrinking away, where tiles are fitted
+    /// with all their corners free.
+    public var tileAreaWeight: Float = 1
 
     public init(
         boundaryReach: Float = 10, floorWeight: Float = 1.0, xingWeight: Float = 0.01,
@@ -82,6 +85,19 @@ public func xingLoss(points: MLXArray) -> MLXArray {
     let sine = cross(ab, cd) / (length(ab) * length(cd) + 1e-6)
     let penalty = turnsLeft * maximum(-sine, 0) + (1 - turnsLeft) * maximum(sine, 0)
     return penalty.mean()
+}
+
+/// The error terms of `fitLoss` alone: image, target [H, W, 3]; boundaryDistance [H, W].
+/// Boundary-weighted error plus the plain error floor. For tiles, which have no curves to
+/// keep in shape.
+public func tileLoss(
+    image: MLXArray, target: MLXArray, boundaryDistance: MLXArray, config: LossConfig
+) -> MLXArray {
+    let diff = image - target
+    let squared = (diff * diff).sum(axis: -1)  // [H, W]
+    let weight = stopGradient(maximum(1 - boundaryDistance / config.boundaryReach, 0))
+    let weighted = (weight * squared).sum() / (weight.sum() + 1e-6)
+    return weighted + config.floorWeight * squared.mean()
 }
 
 /// image, target [H, W, 3]; boundaryDistance [H, W]; points [P, 12, 2] of the shapes that
