@@ -1,7 +1,7 @@
 import Foundation
 import NotanCore
 
-let usage = "usage: notan <image> <outdir> [--mode refit|prefix] [--shapes N] [--size N] [--steps N] [--min-width PX] [--folds avoid|allow] [--fill flat|gradient]\n       tuning: [--softness PX] [--floor W] [--reach PX] [--xing W] [--seeds error|paper]\n               [--fold-weight W] [--fold-tolerance T]"
+let usage = "usage: notan <image> <outdir> [--mode refit|prefix] [--shapes N] [--size N] [--steps N] [--min-width PX] [--folds avoid|allow] [--fill flat|gradient]\n       [--kind curves|tiles] [--order tree|worst]\n       tuning: [--softness PX] [--floor W] [--reach PX] [--xing W] [--seeds error|paper]\n               [--fold-weight W] [--fold-tolerance T]"
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("notan: \(message)\n".utf8))
@@ -53,6 +53,16 @@ while !arguments.isEmpty {
             fail("--fill must be flat or gradient, not “\(value)”")
         }
         settings.gradients = value == "gradient"
+    case "--kind":
+        guard let kind = ShapeKind(rawValue: value) else {
+            fail("--kind must be curves or tiles, not “\(value)”")
+        }
+        settings.kind = kind
+    case "--order":
+        guard let order = TileOrder(rawValue: value) else {
+            fail("--order must be tree or worst, not “\(value)”")
+        }
+        settings.tileOrder = order
     case "--shapes": settings.totalShapes = positiveInt(max: 4096)
     case "--size": settings.workingSize = positiveInt(max: 2048)
     case "--steps": settings.stepsPerStage = positiveInt(max: 100_000)
@@ -95,15 +105,15 @@ func pad(_ text: String, _ width: Int) -> String {
 
 let target = photo.target
 print("\(imageURL.lastPathComponent): fitting at \(target.width)×\(target.height), "
-    + "\(settings.totalShapes) shapes, \(settings.stepsPerStage) steps per stage, mode \(settings.mode.rawValue)"
+    + "\(settings.totalShapes) \(settings.kind == .tiles ? "tiles, order \(settings.tileOrder.rawValue)" : "shapes"), "
+    + "\(settings.stepsPerStage) steps per stage, mode \(settings.mode.rawValue)"
     + (settings.minWidth > 0 ? ", min width \(settings.minWidth) px" : ""))
 print(pad("level", 7) + pad("shapes", 8) + pad("bytes", 8) + pad("mse", 10) + "seconds")
 
 let started = Date()
 var written = 0
 let pngSize = CGSize(width: target.width * 4, height: target.height * 4)
-let levels = Fitter(target: target, settings: settings, loss: lossConfig, seedRule: seedRule).run(
-    progress: { progress in
+let report: (FitProgress) -> Void = { progress in
         guard let level = progress.finishedLevel else { return }
         let name = String(format: "level-%02d", written)
         do {
@@ -114,18 +124,27 @@ let levels = Fitter(target: target, settings: settings, loss: lossConfig, seedRu
             fail(error.localizedDescription)
         }
         print(
-            pad("\(written)", 7) + pad("\(level.picture.shapes.count)", 8)
+            pad("\(written)", 7) + pad("\(level.picture.shapes.count + level.picture.tiles.count)", 8)
                 + pad("\(level.picture.estimatedBytes)", 8)
                 + pad(String(format: "%.5f", level.mse), 10)
                 + String(format: "%.1f", Date().timeIntervalSince(started)))
         fflush(stdout)
         written += 1
-    },
-    isCancelled: { false })
-let ratios = levels.last?.picture.shapes.map { foldRatio(of: $0) } ?? []
-print(
-    String(
-        format: "total %.1f s, %d levels, peak memory in use %.1f GB; at the last level %d shapes sweep back over 5%%, %d over 15%%, %d over 30%%",
-        Date().timeIntervalSince(started), levels.count, Double(peakFitMemoryBytes()) / 1e9,
+}
+let levels =
+    settings.kind == .tiles
+    ? TileFitter(target: target, settings: settings, loss: lossConfig).run(
+        progress: report, isCancelled: { false })
+    : Fitter(target: target, settings: settings, loss: lossConfig, seedRule: seedRule).run(
+        progress: report, isCancelled: { false })
+var summary = String(
+    format: "total %.1f s, %d levels, peak memory in use %.1f GB", Date().timeIntervalSince(started),
+    levels.count, Double(peakFitMemoryBytes()) / 1e9)
+if settings.kind == .curves {
+    let ratios = levels.last?.picture.shapes.map { foldRatio(of: $0) } ?? []
+    summary += String(
+        format: "; at the last level %d shapes sweep back over 5%%, %d over 15%%, %d over 30%%",
         ratios.filter { $0 > 0.05 }.count, ratios.filter { $0 > 0.15 }.count,
-        ratios.filter { $0 > 0.3 }.count))
+        ratios.filter { $0 > 0.3 }.count)
+}
+print(summary)
