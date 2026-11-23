@@ -26,7 +26,8 @@ public func thickness(of polygon: [SIMD2<Float>]) -> Float {
 /// No piece of a cut may be smaller than this, in pixels of area.
 public let minTileArea: Float = 4
 
-private func contains(_ polygon: [SIMD2<Float>], _ point: SIMD2<Float>) -> Bool {
+/// Whether a point lies inside a polygon (by the even-odd rule).
+func polygonContains(_ polygon: [SIMD2<Float>], _ point: SIMD2<Float>) -> Bool {
     var inside = false
     var previous = polygon[polygon.count - 1]
     for corner in polygon {
@@ -81,7 +82,7 @@ public func bestCut(
     for y in y0..<y1 {
         for x in x0..<x1 {
             let centre = SIMD2(Float(x) + 0.5, Float(y) + 0.5)
-            guard contains(polygon, centre) else { continue }
+            guard polygonContains(polygon, centre) else { continue }
             let base = (y * target.width + x) * 3
             let colour = SIMD3(
                 Double(target.pixels[base]), Double(target.pixels[base + 1]),
@@ -133,7 +134,7 @@ public func bestCut(
             let p = from.point
             let q = to.point
             if !convex {
-                guard contains(polygon, (p + q) / 2) else { continue }
+                guard polygonContains(polygon, (p + q) / 2) else { continue }
                 var leaves = false
                 for edge in 0..<count where edge != from.end.edge && edge != to.end.edge {
                     if segmentsMeet(p, q, polygon[edge], polygon[(edge + 1) % count]) {
@@ -165,7 +166,7 @@ public func bestCut(
                     }
                 }
             } else {
-                for index in centres.indices where contains(first, centres[index]) {
+                for index in centres.indices where polygonContains(first, centres[index]) {
                     sum += colours[index]
                     number += 1
                 }

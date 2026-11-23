@@ -39,9 +39,15 @@ public func refinePlan(
             return nil
         }
     } else {
-        guard let shape = picture.shape(at: node) else { return nil }
-        let polygon = samplePolygon(shape.points, samplesPerSegment: 8)
-            .filter { $0.x.isFinite && $0.y.isFinite }
+        let polygon: [SIMD2<Float>]
+        if node.isTile {
+            // The tile itself, or the pieces it has been cut into.
+            polygon = picture.tiles.filter { $0.path.starts(with: node.path) }.flatMap(\.corners)
+        } else {
+            guard let shape = picture.shape(at: node) else { return nil }
+            polygon = samplePolygon(shape.points, samplesPerSegment: 8)
+                .filter { $0.x.isFinite && $0.y.isFinite }
+        }
         guard let first = polygon.first else { return nil }
         var low = first
         var high = first
@@ -81,12 +87,15 @@ public struct RefineProgress: Sendable {
 public enum RefineError: Error, LocalizedError, Equatable {
     case regionNotFound
     case regionNotVisible
+    case tilesNotInOnePiece
 
     public var errorDescription: String? {
         switch self {
         case .regionNotFound: return "That shape is no longer in the picture."
         case .regionNotVisible:
             return "That shape is hidden behind other shapes or too small, so there is nothing to refine inside it."
+        case .tilesNotInOnePiece:
+            return "Those tiles do not form one piece, so they cannot be refined together. Select them one by one."
         }
     }
 }
@@ -121,6 +130,10 @@ public struct Refiner {
                 picture: picture, node: node, originalPixelSize: original,
                 workingSize: settings.workingSize)
         else { throw RefineError.regionNotFound }
+
+        if node.isTile {
+            return try runTiles(plan: plan, progress: progress, isCancelled: isCancelled)
+        }
 
         let viewport = plan.viewport
         let maskPixels = renderRegion(
@@ -167,6 +180,47 @@ public struct Refiner {
         let fitter = Fitter(
             target: target, settings: settings, loss: loss,
             region: FitRegion(base: base, mask: scored, seedMask: mask))
+        let levels = fitter.run(
+            progress: {
+                progress(
+                    RefineProgress(
+                        stage: $0.stage, stageCount: $0.stageCount,
+                        finishedLevel: $0.finishedLevel.map(inPicture)))
+            }, isCancelled: isCancelled)
+        return levels.map(inPicture)
+    }
+
+    /// Refining a tile: the tile, or the group of pieces it has been cut into, is cut
+    /// afresh into finer tiles, fitted to the zoomed photo inside its outline only. The
+    /// levels hold the tiles that take its place, level 0 being the tile whole. Their
+    /// addresses continue the tile's own.
+    private func runTiles(
+        plan: RefinePlan, progress: (RefineProgress) -> Void, isCancelled: () -> Bool
+    ) throws -> [InnerLevel] {
+        let pieces = picture.tiles.filter { $0.path.starts(with: node.path) }
+        guard !pieces.isEmpty else { throw RefineError.regionNotFound }
+        guard let outline = groupOutline(pieces) else { throw RefineError.tilesNotInOnePiece }
+
+        let viewport = plan.viewport
+        let target = try loadPhotoRegion(
+            url: photoURL, region: viewport, pictureWidth: picture.width,
+            pictureHeight: picture.height, width: plan.width, height: plan.height)
+        // Fitted in viewport pixels; stored in picture coordinates.
+        let scale = SIMD2(
+            Float(viewport.width) / Float(plan.width), Float(viewport.height) / Float(plan.height))
+        let origin = SIMD2(Float(viewport.minX), Float(viewport.minY))
+        func inPicture(_ level: Level) -> InnerLevel {
+            InnerLevel(
+                shapes: [], mse: level.mse,
+                tiles: level.picture.tiles.map {
+                    Tile(
+                        corners: $0.corners.map { $0 * scale + origin }, color: $0.color,
+                        path: node.path + $0.path)
+                })
+        }
+        let fitter = TileFitter(
+            target: target, settings: settings, loss: loss,
+            outline: outline.map { ($0 - origin) / scale })
         let levels = fitter.run(
             progress: {
                 progress(

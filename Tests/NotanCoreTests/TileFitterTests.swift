@@ -1,6 +1,8 @@
 import XCTest
 @testable import NotanCore
 
+let patchOutline: [SIMD2<Float>] = [SIMD2(8, 6), SIMD2(42, 10), SIMD2(38, 40), SIMD2(6, 36)]
+
 final class TileFitterTests: XCTestCase {
     func settings(_ tiles: Int, _ order: TileOrder, _ mode: LevelMode = .prefix, steps: Int = 30) -> FitSettings {
         var settings = FitSettings()
@@ -371,5 +373,72 @@ final class TileFitterTests: XCTestCase {
         // Many tiles meeting at shared corners: the sums over them must not depend on the run.
         let first = fit(noise, settings(16, .tree, .refit)).map(\.picture)
         for _ in 0..<2 { XCTAssertEqual(fit(noise, settings(16, .tree, .refit)).map(\.picture), first) }
+    }
+
+    // MARK: Inside one tile's outline
+
+    /// A slanted four-cornered outline inside a 48×48 picture.
+    let patch = patchOutline
+
+    /// Inside the patch, black left of x = 22 and white right of it; outside it a loud
+    /// checker, which a fit kept to the patch never sees.
+    let patchTarget = makeTarget(width: 48, height: 48) { x, y in
+        guard polygonContains(patchOutline, SIMD2(x, y)) else {
+            return (Int(x) / 2 + Int(y) / 2) % 2 == 0 ? .red : .blue
+        }
+        return x < 22 ? .black : .white
+    }
+
+    func fitPatch(_ settings: FitSettings) -> [Level] {
+        TileFitter(target: patchTarget, settings: settings, outline: patch)
+            .run(progress: { _ in }, isCancelled: { false })
+    }
+
+    /// How far a point is from the nearest edge of a polygon's outline.
+    func distance(_ point: SIMD2<Float>, toOutlineOf polygon: [SIMD2<Float>]) -> Float {
+        polygon.indices.map { index -> Float in
+            let a = polygon[index]
+            let b = polygon[(index + 1) % polygon.count]
+            let t = max(0, min(1, ((point - a) * (b - a)).sum() / ((b - a) * (b - a)).sum()))
+            let offset = point - (a + (b - a) * t)
+            return (offset * offset).sum().squareRoot()
+        }.min()!
+    }
+
+    func testAFitInsideAnOutlineTilesThatOutline() {
+        for mode in LevelMode.allCases {
+            let levels = fitPatch(settings(8, .worst, mode))
+            XCTAssertEqual(levels[0].picture.tiles.map(\.corners), [patch], "\(mode)")
+            XCTAssertEqual(levels.last?.picture.tiles.count, 8, "\(mode)")
+            for level in levels {
+                var area: Float = 0
+                for tile in level.picture.tiles {
+                    XCTAssertTrue(isSimplePolygon(tile.corners))
+                    XCTAssertGreaterThan(polygonArea(tile.corners), 0)
+                    area += polygonArea(tile.corners)
+                }
+                XCTAssertEqual(area, polygonArea(patch), accuracy: 0.05, "\(mode)")
+                // The outline's own corners are all still there, and nothing lies outside it.
+                let corners = level.picture.tiles.flatMap(\.corners)
+                for corner in patch { XCTAssertTrue(corners.contains(corner), "\(mode)") }
+                for corner in corners {
+                    let onOutline = distance(corner, toOutlineOf: patch) < 0.01
+                    let inside = polygonContains(patch, corner)
+                    XCTAssertTrue(onOutline || inside, "\(mode): \(corner) has left the outline")
+                }
+            }
+        }
+    }
+
+    func testAFitInsideAnOutlineIsScoredInsideItOnly() throws {
+        for mode in LevelMode.allCases {
+            let levels = fitPatch(settings(4, .worst, mode, steps: 60))
+            // The first tile is the mean of the patch's own pixels: grey, with no red or blue in it.
+            let first = levels[0].picture.tiles[0].color
+            XCTAssertEqual(first.r, first.b, accuracy: 0.08, "\(mode)")
+            XCTAssertGreaterThan(levels[0].mse, 0.1, "\(mode)")
+            // One cut along x = 22 is all it takes inside the patch.
+            XCTAssertLessThan(try XCTUnwrap(levels.last).mse, 0.03, "\(mode)")
+        }
     }
 }

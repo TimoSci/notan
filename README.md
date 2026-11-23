@@ -26,9 +26,13 @@ dark.
   once their stage ends, so each level is exactly the first shapes of the next. For
   tiles, *Prefix* means a tile's outline is fixed once it is cut, so each level's tiles
   are made up exactly of the next level's.
-- **Refines parts of the picture** (curves only). Select one or more shapes, or the gaps between them,
+- **Refines parts of the picture.** Select one or more shapes, or the gaps between them,
   and fit finer shapes inside just those areas. A refined area is locked: it stays on top
   on later levels until you unlock it.
+  A selected tile is cut further in the same way, and the finer tiles take its place.
+  With *Prefix* levels a refined tile stays on later levels too, until you unlock it;
+  with *Re-fit* levels it shows on the level it was refined on, because a tile has
+  another outline on every other level.
 - **Exports SVG.** The level on screen is written as an SVG at the photo's pixel size.
 
 The picture on screen and in the SVG is always drawn from the vector shapes, with hard
@@ -69,7 +73,7 @@ open ../.build/app/Build/Products/Release/Notan.app
 5. **Select tiles, in tile mode.** Click a tile to select it; the rest of the picture is
    dimmed. *Parent* selects the tile it was cut from. The selection stays as you move
    through the levels: on a later level it is the pieces the tile was cut into.
-6. **Refine, if you want more detail somewhere** (curves only). Click a shape or a gap to select it;
+6. **Refine, if you want more detail somewhere.** Click a shape, a gap or a tile to select it;
    Shift-click adds one to the selection or takes it out; Esc selects the whole picture
    again. *Refine selection* then fits finer shapes inside each selected area. The
    *Refined areas* panel on the right lists them by level, and the lock next to each one

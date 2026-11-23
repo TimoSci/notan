@@ -32,8 +32,7 @@ Everything below is the designer's call.
 
 ## Non-goals (this plan)
 
-- Refine selection, the refined-areas panel and the depth slider in tile mode. They are
-  disabled there.
+- The depth slider in tile mode.
 - Gradient fills and the "Avoid folds" option in tile mode.
 - Bent cuts. A cut is one straight segment.
 - A compact byte format for tiles. The byte figure is an estimate.
@@ -118,6 +117,25 @@ error that no straight cut improves would waste cuts.
   group of its pieces; on an earlier level the selection falls back to the tile that
   contains it. The rest of the picture is dimmed.
 - Size estimate: 3 bytes, plus 3 per tile, plus 4 per distinct corner.
+
+### Refining a tile (added 2026-11-21, after the first build)
+
+The owner asked for refinement in tile mode, on these rules, proposed by the designer:
+
+- Refine selection cuts each selected tile further, with the current tile count, steps
+  and cut order, zoomed into that part of the photo as curve refinement is. A selected
+  group of pieces is refined as one area, inside the outline round the group.
+- The fit is the ordinary tile fit, kept to the tile's outline: only the pixels inside
+  it count, the outline's corners do not move, and a cut end on the outline slides
+  along it.
+- The finer tiles take the tile's place. With a refined tile selected, the Level slider
+  steps through its levels.
+- With Prefix levels a tile has the same outline on every later level, so a refined
+  tile is shown there too, locked by default, and can be unlocked in the refined-areas
+  panel. With Re-fit levels its outline differs on every other level, so it shows only
+  on the level it was refined on.
+- A tile inside a refined tile can be refined in turn. It belongs to the level of the
+  outer refinement it was made on. Refining the outer tile again drops it.
 
 ## Left to the builder
 

@@ -1402,12 +1402,201 @@ final class FitModelTests: XCTestCase {
         XCTAssertEqual(model.sliderLast, 3)
     }
 
-    func testTilesCannotBeRefined() async {
-        let model = await tiledModel()
-        model.select(at: SIMD2(6, 2))
-        XCTAssertFalse(model.canRefine)
-        XCTAssertTrue(model.lockTree.isEmpty)
+    // MARK: Refining tiles
+
+    /// Cuts the box round the tile into upright strips: level 0 is the box whole, level 1
+    /// two strips, level 2 three. Their addresses continue the tile's own with [0], [1]
+    /// and then [0], [1, 0], [1, 1].
+    nonisolated static func tileRefiner() -> RefineRunner {
+        { _, picture, node, _, progress, _ in
+            let corners = picture.tiles.filter { $0.path.starts(with: node.path) }.flatMap(\.corners)
+            let x0 = corners.map(\.x).min() ?? 0
+            let x1 = corners.map(\.x).max() ?? 0
+            let y0 = corners.map(\.y).min() ?? 0
+            let y1 = corners.map(\.y).max() ?? 0
+            func strip(_ from: Float, _ to: Float, _ path: [Int]) -> Tile {
+                let a = x0 + (x1 - x0) * from
+                let b = x0 + (x1 - x0) * to
+                return Tile(
+                    corners: [SIMD2(a, y0), SIMD2(b, y0), SIMD2(b, y1), SIMD2(a, y1)],
+                    color: RGB(r: 0, g: 0, b: 1), path: node.path + path)
+            }
+            let levels = [
+                InnerLevel(shapes: [], mse: 0.3, tiles: [strip(0, 1, [])]),
+                InnerLevel(shapes: [], mse: 0.2, tiles: [strip(0, 0.5, [0]), strip(0.5, 1, [1])]),
+                InnerLevel(
+                    shapes: [], mse: 0.1,
+                    tiles: [strip(0, 1 / 3, [0]), strip(1 / 3, 2 / 3, [1, 0]), strip(2 / 3, 1, [1, 1])]),
+            ]
+            for (stage, level) in levels.enumerated() {
+                progress(RefineProgress(stage: stage, stageCount: 2, finishedLevel: level))
+            }
+            return levels
+        }
+    }
+
+    /// A model with a finished tile fit and a refiner for tiles, showing the last level.
+    func refinableTiledModel(mode: LevelMode = .refit) async -> FitModel {
+        let model = makeModel(Self.eitherRunner(), refine: Self.tileRefiner())
+        model.open(photoURL)
+        model.settings.kind = .tiles
+        model.settings.mode = mode
+        model.start()
+        await waitFor("done") { model.status == .done }
+        return model
+    }
+
+    func refineSelection(_ model: FitModel) async {
+        XCTAssertTrue(model.canRefine)
+        model.refine()
+        await waitFor("refined") { !model.isFitting && !model.isRefining }
+    }
+
+    func paths(_ model: FitModel) -> [[Int]] { model.shownPicture?.tiles.map(\.path) ?? [] }
+
+    func testRefiningATileCutsItFurther() async {
+        let model = await refinableTiledModel()
         XCTAssertEqual(model.maxDepth, 0)
+        model.select(at: SIMD2(6, 2))
+        await refineSelection(model)
+        XCTAssertEqual(model.status, .done)
+        XCTAssertEqual(
+            paths(model), [[0, 0, 0], [0, 0, 1, 0], [0, 0, 1, 1], [0, 1], [1, 0], [1, 1]])
+        XCTAssertEqual(model.selected, [.tile([0, 0])])
+        XCTAssertEqual(model.selectedTiles.map(\.count), [3])
+        XCTAssertTrue(model.caption.hasPrefix("6 tiles"))
+    }
+
+    func testTheSliderStepsThroughASelectedRefinedTile() async {
+        let model = await refinableTiledModel()
+        model.select(at: SIMD2(6, 2))
+        XCTAssertFalse(model.sliderStepsSelection)
+        await refineSelection(model)
+        XCTAssertTrue(model.sliderStepsSelection)
+        XCTAssertEqual(model.sliderStop, 2)
+        XCTAssertEqual(model.sliderLast, 2)
+        model.userMovedSlider(to: 1)
+        XCTAssertEqual(model.shownStop, 3, "the picture's own level stays")
+        XCTAssertEqual(paths(model), [[0, 0, 0], [0, 0, 1], [0, 1], [1, 0], [1, 1]])
+        model.userMovedSlider(to: 0)
+        XCTAssertEqual(paths(model), [[0, 0], [0, 1], [1, 0], [1, 1]])
+        // With nothing selected the slider is the picture's again.
+        model.select(at: nil)
+        XCTAssertFalse(model.sliderStepsSelection)
+        model.userMovedSlider(to: 2)
+        XCTAssertEqual(model.shownStop, 2)
+    }
+
+    func testInReFitARefinedTileShowsOnItsOwnLevelOnly() async {
+        let model = await refinableTiledModel()
+        model.userMovedSlider(to: 2)
+        model.select(at: SIMD2(6, 2))
+        await refineSelection(model)
+        model.select(at: nil)
+        XCTAssertEqual(paths(model).count, 5)
+        model.userMovedSlider(to: 3)
+        XCTAssertEqual(paths(model), [[0, 0], [0, 1], [1, 0], [1, 1]])
+        model.userMovedSlider(to: 1)
+        XCTAssertEqual(paths(model), [[0], [1]])
+        model.userMovedSlider(to: 2)
+        XCTAssertEqual(paths(model).count, 5)
+        // Nothing to lock: the tile has another outline on every other level.
+        XCTAssertEqual(model.lockTree.map(\.title), ["Level 2"])
+        XCTAssertEqual(model.lockTree[0].children?.map(\.title), ["Tile 1 › 1"])
+        XCTAssertEqual(model.lockTree[0].children?.map(\.isLocked), [nil])
+    }
+
+    func testInPrefixARefinedTileIsLockedOnLaterLevels() async {
+        let model = await refinableTiledModel(mode: .prefix)
+        model.userMovedSlider(to: 2)
+        model.select(at: SIMD2(6, 2))
+        await refineSelection(model)
+        model.select(at: nil)
+        let refined = [[0, 0, 0], [0, 0, 1, 0], [0, 0, 1, 1]]
+        // On level 2 the left half, not yet cut, comes first.
+        XCTAssertEqual(paths(model), [[1]] + refined + [[0, 1]])
+        model.userMovedSlider(to: 3)
+        XCTAssertEqual(paths(model), refined + [[0, 1], [1, 0], [1, 1]])
+        // Not on levels before the one it was made on.
+        model.userMovedSlider(to: 1)
+        XCTAssertEqual(paths(model), [[0], [1]])
+
+        let area = try! XCTUnwrap(model.lockTree.first?.children?.first)
+        XCTAssertEqual(area.title, "Tile 1 › 1")
+        XCTAssertEqual(area.isLocked, true)
+        model.setLocked(false, area: area)
+        model.userMovedSlider(to: 3)
+        XCTAssertEqual(paths(model), [[0, 0], [0, 1], [1, 0], [1, 1]])
+        model.userMovedSlider(to: 2)
+        XCTAssertEqual(paths(model), [[1]] + refined + [[0, 1]], "unlocked, it still shows where it was made")
+        XCTAssertEqual(model.lockTree.first?.children?.first?.isLocked, false)
+    }
+
+    func testShowingARefinedTileFromTheTreeSelectsIt() async {
+        let model = await refinableTiledModel(mode: .prefix)
+        model.userMovedSlider(to: 2)
+        model.select(at: SIMD2(6, 2))
+        await refineSelection(model)
+        model.select(at: nil)
+        model.userMovedSlider(to: 0)
+        model.show(area: try! XCTUnwrap(model.lockTree.first?.children?.first))
+        XCTAssertEqual(model.shownStop, 2)
+        XCTAssertEqual(model.selected, [.tile([0, 0])])
+    }
+
+    func testRefiningAGroupOfPiecesReplacesThemAll() async {
+        let model = await refinableTiledModel()
+        model.select(at: SIMD2(6, 2))
+        model.selectParent()
+        XCTAssertEqual(model.selected, [.tile([0])])
+        await refineSelection(model)
+        XCTAssertEqual(paths(model), [[0, 0], [0, 1, 0], [0, 1, 1], [1, 0], [1, 1]])
+    }
+
+    func testSeveralTilesAreRefinedTogether() async {
+        let model = await refinableTiledModel()
+        model.select(at: SIMD2(6, 2))
+        model.select(at: SIMD2(2, 6), toggling: true)
+        await refineSelection(model)
+        XCTAssertEqual(paths(model).count, 8)
+        XCTAssertEqual(model.lockTree.first?.children?.count, 2)
+    }
+
+    func testATileInsideARefinedTileCanBeRefinedToo() async {
+        let model = await refinableTiledModel()
+        model.select(at: SIMD2(6, 2))
+        await refineSelection(model)
+        // The right-hand strip of the three.
+        model.select(at: SIMD2(7.5, 2))
+        XCTAssertEqual(model.selected, [.tile([0, 0, 1, 1])])
+        await refineSelection(model)
+        XCTAssertEqual(paths(model).count, 8)
+        XCTAssertEqual(model.lockTree.first?.children?.count, 1)
+        XCTAssertEqual(model.lockTree.first?.children?.first?.children?.map(\.title), ["Tile 1 › 1 › 2 › 2"])
+
+        // It belongs to the level of the outer refinement it was made on.
+        model.selectParent()
+        model.selectParent()
+        XCTAssertEqual(model.selected, [.tile([0, 0])])
+        model.userMovedSlider(to: 1)
+        XCTAssertEqual(paths(model), [[0, 0, 0], [0, 0, 1], [0, 1], [1, 0], [1, 1]])
+        model.userMovedSlider(to: 2)
+        XCTAssertEqual(paths(model).count, 8)
+
+        // Refining the outer tile again starts it afresh.
+        await refineSelection(model)
+        XCTAssertEqual(paths(model).count, 6)
+        XCTAssertNil(model.lockTree.first?.children?.first?.children)
+    }
+
+    func testFittingAgainDropsTheTileRefinements() async {
+        let model = await refinableTiledModel()
+        model.select(at: SIMD2(6, 2))
+        await refineSelection(model)
+        model.start()
+        await waitFor("done") { model.status == .done && model.levels.count == 4 }
+        XCTAssertEqual(paths(model).count, 4)
+        XCTAssertTrue(model.lockTree.isEmpty)
     }
 
     func testTileSelectionLabelAndCaption() async {

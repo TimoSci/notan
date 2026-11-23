@@ -366,6 +366,47 @@ public func makeCGImage(
     return context.makeImage()
 }
 
+/// The outline of the area a group of tiles covers between them, as one polygon with its
+/// corners in the order of a sound tile. Nil if they do not form one piece without holes.
+/// One tile's outline is its own; a group's is a hundredth of a pixel outside the tiles,
+/// which are grown by that much so that they join.
+public func groupOutline(_ tiles: [Tile]) -> [SIMD2<Float>]? {
+    guard let first = tiles.first else { return nil }
+    if tiles.count == 1 { return first.corners }
+    var joined: CGPath = CGMutablePath()
+    for tile in tiles {
+        let grown = Tile(corners: grownPolygon(tile.corners, by: 0.01), color: tile.color, path: tile.path)
+        joined = joined.union(outline(of: grown), using: .winding)
+    }
+    var rings: [[SIMD2<Float>]] = []
+    var straight = true
+    joined.applyWithBlock { element in
+        let points = element.pointee.points
+        switch element.pointee.type {
+        case .moveToPoint: rings.append([SIMD2(Float(points[0].x), Float(points[0].y))])
+        case .addLineToPoint:
+            rings[rings.count - 1].append(SIMD2(Float(points[0].x), Float(points[0].y)))
+        case .closeSubpath: break
+        default: straight = false
+        }
+    }
+    guard straight, rings.count == 1 else { return nil }
+    // Drop a point that repeats the one before it (the ring closes on its first point).
+    var ring: [SIMD2<Float>] = []
+    for point in rings[0] {
+        if let last = ring.last, abs(last.x - point.x) < 1e-4, abs(last.y - point.y) < 1e-4 { continue }
+        ring.append(point)
+    }
+    if let start = ring.first, let last = ring.last, ring.count > 1,
+        abs(last.x - start.x) < 1e-4, abs(last.y - start.y) < 1e-4
+    {
+        ring.removeLast()
+    }
+    guard ring.count >= 3 else { return nil }
+    if polygonArea(ring) < 0 { ring.reverse() }
+    return isSimplePolygon(ring) ? ring : nil
+}
+
 /// How dark the rest of the picture is made when tiles are selected: the share of black.
 public let selectionDimming: CGFloat = 0.45
 
@@ -411,16 +452,22 @@ public func dim(_ picture: Picture, allBut tiles: [Tile], in context: CGContext,
 ///
 /// The picture is drawn at several times the target's size and averaged down, so that
 /// what is measured is the shapes themselves. Drawn at the target's own size, the half
-/// pixel by which tiles are grown to hide their seams would count as error.
-public func measuredMSE(_ picture: Picture, against target: TargetImage) -> Float {
+/// pixel by which tiles are grown to hide their seams would count as error. With
+/// `counting`, one flag per target pixel, only the flagged pixels are measured.
+public func measuredMSE(
+    _ picture: Picture, against target: TargetImage, counting counted: [Bool]? = nil
+) -> Float {
     let factor = 4
     let width = target.width * factor
     let drawn = renderRegion(
         picture, region: CGRect(x: 0, y: 0, width: picture.width, height: picture.height),
         width: width, height: target.height * factor)
     var sum: Double = 0
+    var pixels = 0
     for y in 0..<target.height {
         for x in 0..<target.width {
+            if let counted, !counted[y * target.width + x] { continue }
+            pixels += 1
             for channel in 0..<3 {
                 var mean: Float = 0
                 for dy in 0..<factor {
@@ -433,7 +480,7 @@ public func measuredMSE(_ picture: Picture, against target: TargetImage) -> Floa
             }
         }
     }
-    return Float(sum / Double(max(target.pixels.count, 1)))
+    return Float(sum / Double(max(pixels * 3, 1)))
 }
 
 /// The part of the picture inside `region` (picture coordinates), drawn at width × height

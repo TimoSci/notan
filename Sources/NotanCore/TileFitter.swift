@@ -13,6 +13,10 @@ public struct TileFitter {
     public let target: TargetImage
     public let settings: FitSettings
     public let loss: LossConfig
+    /// With an outline, a polygon in the target's pixel coordinates, only that polygon is
+    /// tiled and only the pixels inside it are fitted: for cutting one tile further. Its
+    /// own corners stay where they are.
+    public let outline: [SIMD2<Float>]?
 
     /// How far, in units of the raster's softness, each tile is grown for the underlay.
     ///
@@ -25,10 +29,14 @@ public struct TileFitter {
     /// own soft edge alone, which is even.
     public static let underlayGrowth: Float = 6
 
-    public init(target: TargetImage, settings: FitSettings, loss: LossConfig = .init()) {
+    public init(
+        target: TargetImage, settings: FitSettings, loss: LossConfig = .init(),
+        outline: [SIMD2<Float>]? = nil
+    ) {
         self.target = target
         self.settings = settings
         self.loss = loss
+        self.outline = outline
     }
 
     /// Blocking. Returns the levels finished so far, level 0 first, when done or cancelled.
@@ -51,7 +59,31 @@ public struct TileFitter {
         let background = colorArray(target.meanColor)
         let schedule = tileSchedule(totalTiles: settings.totalShapes, order: settings.tileOrder)
 
-        var mesh = TileMesh(width: width, height: height, color: target.meanColor)
+        // With an outline: which pixels lie inside it, and their mean colour.
+        var counted: [Bool]?
+        var startColor = target.meanColor
+        if let outline {
+            var inside = [Bool](repeating: false, count: width * height)
+            var sum = SIMD3<Double>(0, 0, 0)
+            var number = 0
+            for y in 0..<height {
+                for x in 0..<width where polygonContains(outline, SIMD2(Float(x) + 0.5, Float(y) + 0.5)) {
+                    inside[y * width + x] = true
+                    let colour = target.color(x: x, y: y)
+                    sum += SIMD3(Double(colour.r), Double(colour.g), Double(colour.b))
+                    number += 1
+                }
+            }
+            counted = inside
+            if number > 0 {
+                let mean = sum / Double(number)
+                startColor = RGB(r: Float(mean.x), g: Float(mean.y), b: Float(mean.z))
+            }
+        }
+        let lossMask = counted.map { MLXArray($0.map { $0 ? Float(1) : 0 }, [height, width]) }
+        var mesh =
+            outline.map { TileMesh(width: width, height: height, color: startColor, outline: $0) }
+            ?? TileMesh(width: width, height: height, color: startColor)
         var levels: [Level] = []
 
         func picture() -> Picture {
@@ -61,7 +93,8 @@ public struct TileFitter {
         }
         func finish(stage: Int) {
             let picture = picture()
-            let level = Level(picture: picture, mse: measuredMSE(picture, against: target))
+            let level = Level(
+                picture: picture, mse: measuredMSE(picture, against: target, counting: counted))
             levels.append(level)
             progress(
                 FitProgress(
@@ -135,6 +168,8 @@ public struct TileFitter {
             var slideAlong: [SIMD2<Float>] = []
             var slideLength: [Float] = []
             var mask: MLXArray?
+            // For a point that slides along the outline: the direction it may move in.
+            var rails: MLXArray?
             if sharesCorners {
                 parameters = [pointsArray(mesh.points[...]), coloursArray(movable)]
                 mask = MLXArray(
@@ -145,6 +180,13 @@ public struct TileFitter {
                         case .alongY: return [0, 1]
                         case .fixed, .slide: return [0, 0]
                         }
+                    }, [mesh.points.count, 2])
+                rails = MLXArray(
+                    mesh.freedom.flatMap { freedom -> [Float] in
+                        guard case .slide(let from, let to) = freedom else { return [0, 0] }
+                        let edge = mesh.points[to] - mesh.points[from]
+                        let length = (edge * edge).sum().squareRoot()
+                        return length > 0 ? [edge.x / length, edge.y / length] : [0, 0]
                     }, [mesh.points.count, 2])
             } else {
                 var distances: [Float] = []
@@ -239,7 +281,7 @@ public struct TileFitter {
                     return [
                         tileLoss(
                             image: image, target: targetArray, boundaryDistance: boundary,
-                            config: lossConfig) + areaWeight * shrunk
+                            config: lossConfig, mask: lossMask) + areaWeight * shrunk
                     ]
                 }, argumentNumbers: [0, 1])
 
@@ -253,8 +295,9 @@ public struct TileFitter {
                 let byPoint = allLayout.pointGradient(
                     outlineGradient: gradients[0].asArray(Float.self), pointCount: mesh.points.count)
                 let first: MLXArray
-                if let mask {
-                    first = MLXArray(byPoint, [mesh.points.count, 2]) * mask
+                if let mask, let rails {
+                    let whole = MLXArray(byPoint, [mesh.points.count, 2])
+                    first = whole * mask + rails * (whole * rails).sum(axis: 1, keepDims: true)
                 } else {
                     // A cut end moves only along its edge.
                     first = MLXArray(
@@ -263,7 +306,18 @@ public struct TileFitter {
                             return byPoint[point] * slideAlong[index].x + byPoint[point + 1] * slideAlong[index].y
                         })
                 }
-                parameters = adam.step(parameters: parameters, gradients: [first, gradients[1]])
+                let stepped = adam.step(parameters: parameters, gradients: [first, gradients[1]])
+                if let mask, let rails {
+                    // Adam scales each coordinate by itself, which turns a move along a
+                    // slanted outline edge off that edge: keep only the part along it.
+                    let move = stepped[0] - parameters[0]
+                    parameters = [
+                        parameters[0] + move * mask + rails * (move * rails).sum(axis: 1, keepDims: true),
+                        stepped[1],
+                    ]
+                } else {
+                    parameters = stepped
+                }
                 parameters[1] = clip(parameters[1], min: 0, max: 1)
                 if !sharesCorners { parameters[0] = clip(parameters[0], min: slideLow, max: slideHigh) }
                 eval(parameters)

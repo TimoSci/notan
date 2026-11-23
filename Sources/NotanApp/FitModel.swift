@@ -164,6 +164,25 @@ public final class FitModel {
     private var refinements: [Variant: [Refinement]] = [:]
     private var nextRefinementID = 0
 
+    /// A refined tile: the finer tiles that take its place. Kept beside the levels, as
+    /// curve refinements are.
+    private struct TileRefinement {
+        let id: Int
+        /// The tile's place in the tree of cuts.
+        var path: [Int]
+        var madeAtLevel: Int
+        var inner: Inner
+        /// In Prefix a tile has the same outline on every later level, and a locked
+        /// refinement of it is shown on all of them. In Re-fit the outline differs from
+        /// level to level, so a refinement shows where it was made and nowhere else.
+        var isLocked = true
+        /// For a tile refined inside another refinement: that refinement, and which of
+        /// its levels this one was made on. It shows only while that level does.
+        var parent: Int?
+        var parentLevel = 0
+    }
+    private var tileRefinements: [Variant: [TileRefinement]] = [:]
+
     private var stop = 0
     /// How many layers of refinement to show; nil shows them all.
     private var depthLimit: Int?
@@ -259,7 +278,98 @@ public final class FitModel {
         }
     }
 
+    /// The tile refinements shown on a level, by index, in the order they are applied:
+    /// each before any made inside it.
+    private func shownTileRefinements(mode: Variant, level: Int) -> [Int] {
+        let all = tileRefinements[mode] ?? []
+        let tops = all.indices
+            .filter {
+                all[$0].parent == nil
+                    && (all[$0].madeAtLevel == level
+                        || (mode.mode == .prefix && all[$0].isLocked && all[$0].madeAtLevel < level))
+            }
+            .sorted { (all[$0].path.count, all[$0].madeAtLevel, $0) < (all[$1].path.count, all[$1].madeAtLevel, $1) }
+        var shown: [Int] = []
+        // A refined tile takes the place of everything in it, so a refinement of a tile
+        // inside one already shown is not: the larger, or the one locked first, wins.
+        for index in tops where !shown.contains(where: { all[index].path.starts(with: all[$0].path) }) {
+            shown.append(index)
+        }
+        var grew = true
+        while grew {
+            grew = false
+            for index in all.indices where !shown.contains(index) {
+                guard let parent = all[index].parent,
+                    let outer = shown.first(where: { all[$0].id == parent }),
+                    all[outer].inner.shownIndex == all[index].parentLevel
+                else { continue }
+                shown.append(index)
+                grew = true
+            }
+        }
+        return shown
+    }
+
+    private func attachTileRefinements(to picture: inout NotanCore.Picture, mode: Variant, level: Int) {
+        guard let all = tileRefinements[mode], !all.isEmpty else { return }
+        for index in shownTileRefinements(mode: mode, level: level) {
+            picture.replaceTiles(under: all[index].path, with: all[index].inner.tiles)
+        }
+    }
+
+    /// Sets the refinement of a tile of the picture shown on `level`: of a refined tile
+    /// its own, of a tile inside a refined one a new one made inside that, of any other a
+    /// new one of its own. With `afresh`, for a new fit of the tile, whatever was refined
+    /// inside it before is dropped.
+    private func writeTileInner(_ inner: Inner, at node: NodeID, mode: Variant, level: Int, afresh: Bool) {
+        var all = tileRefinements[mode] ?? []
+        defer { tileRefinements[mode] = all }
+        func dropInside(_ id: Int) {
+            for inside in all.filter({ $0.parent == id }).map(\.id) { dropInside(inside) }
+            all.removeAll { $0.parent == id }
+        }
+        let shown = shownTileRefinements(mode: mode, level: level)
+        if let own = shown.first(where: { all[$0].path == node.path }) {
+            let id = all[own].id
+            all[own].inner = inner
+            if afresh { dropInside(id) }
+            return
+        }
+        // The innermost refinement shown whose tiles the tile is one of, or a group of.
+        let outer = shown
+            .filter { index in
+                node.path.starts(with: all[index].path)
+                    && all[index].inner.tiles.contains { $0.path.starts(with: node.path) }
+            }
+            .max { all[$0].path.count < all[$1].path.count }
+        if let outer {
+            all.append(
+                TileRefinement(
+                    id: nextRefinementID, path: node.path, madeAtLevel: level, inner: inner,
+                    parent: all[outer].id, parentLevel: all[outer].inner.shownIndex))
+            nextRefinementID += 1
+            return
+        }
+        // In Prefix a tile has one refinement, whatever level it was made on.
+        if mode.mode == .prefix,
+            let existing = all.firstIndex(where: { $0.parent == nil && $0.path == node.path })
+        {
+            let id = all[existing].id
+            all[existing].inner = inner
+            all[existing].madeAtLevel = min(all[existing].madeAtLevel, level)
+            if afresh { dropInside(id) }
+            return
+        }
+        all.append(
+            TileRefinement(id: nextRefinementID, path: node.path, madeAtLevel: level, inner: inner))
+        nextRefinementID += 1
+    }
+
     private func attachRefinements(to picture: inout NotanCore.Picture, mode: Variant, level: Int) {
+        if !picture.tiles.isEmpty {
+            attachTileRefinements(to: &picture, mode: mode, level: level)
+            return
+        }
         guard let all = refinements[mode], !all.isEmpty else { return }
         // A picture whose gaps are not told apart still has gap 0: the whole uncovered area.
         for gap in 0..<max(picture.gaps.count, 1) {
@@ -355,6 +465,7 @@ public final class FitModel {
 
     /// The refined areas of the mode being viewed, grouped by the level they were made on.
     public var lockTree: [LockNode] {
+        if isTiling { return tileLockTree }
         let mode = variant
         let all = refinements[mode] ?? []
         let levels = results[mode] ?? []
@@ -389,12 +500,48 @@ public final class FitModel {
         }
     }
 
+    /// The refined tiles of the variant being viewed, grouped by the level they were made
+    /// on, each with the tiles refined inside it. Only in Prefix can a tile be locked.
+    private var tileLockTree: [LockNode] {
+        let mode = variant
+        let all = tileRefinements[mode] ?? []
+        func title(_ refinement: TileRefinement) -> String {
+            "Tile " + refinement.path.map { "\($0 + 1)" }.joined(separator: " › ")
+        }
+        func inside(_ id: Int, level: Int) -> [LockNode]? {
+            let rows = all.filter { $0.parent == id }.map { refinement in
+                LockNode(
+                    id: "tile-\(refinement.id)", title: title(refinement), kind: .inside,
+                    children: inside(refinement.id, level: level), level: level,
+                    refinement: refinement.id)
+            }
+            return rows.isEmpty ? nil : rows
+        }
+        let tops = all.filter { $0.parent == nil }
+        return Set(tops.map(\.madeAtLevel)).sorted().map { level in
+            let areas = tops.filter { $0.madeAtLevel == level }.map { refinement in
+                LockNode(
+                    id: "tile-\(refinement.id)", title: title(refinement), kind: .area,
+                    isLocked: mode.mode == .prefix ? refinement.isLocked : nil,
+                    children: inside(refinement.id, level: level), level: level,
+                    refinement: refinement.id)
+            }
+            return LockNode(
+                id: "level-\(level)", title: "Level \(level)", kind: .level, children: areas,
+                level: level)
+        }
+    }
+
     /// Locks or unlocks an area of the tree. The selection is dropped: the regions it
     /// names may no longer be where they were.
     public func setLocked(_ locked: Bool, area: LockNode) {
-        guard !isFitting, let id = area.refinement,
-            let index = refinements[variant]?.firstIndex(where: { $0.id == id })
-        else { return }
+        guard !isFitting, let id = area.refinement else { return }
+        if let index = tileRefinements[variant]?.firstIndex(where: { $0.id == id }) {
+            tileRefinements[variant]?[index].isLocked = locked
+            selected = []
+            return
+        }
+        guard let index = refinements[variant]?.firstIndex(where: { $0.id == id }) else { return }
         refinements[variant]?[index].isLocked = locked
         selected = []
     }
@@ -405,9 +552,22 @@ public final class FitModel {
         selected = []
         stop = area.level
         followsLatest = stop == levels.count - 1
-        guard let id = area.refinement,
-            let refinement = refinements[variant]?.first(where: { $0.id == id })
-        else { return }
+        guard let id = area.refinement else { return }
+        if let tile = tileRefinements[variant]?.first(where: { $0.id == id }) {
+            // A tile refined inside another shows only on the level of that one it was made on.
+            var levelOf: [Int: Int] = [:]
+            var inside = tile
+            while let parent = inside.parent,
+                let outer = tileRefinements[variant]?.firstIndex(where: { $0.id == parent })
+            {
+                levelOf[outer] = inside.parentLevel
+                inside = tileRefinements[variant]![outer]
+            }
+            for (outer, level) in levelOf { tileRefinements[variant]?[outer].inner.shown = level }
+            selected = [.tile(tile.path)]
+            return
+        }
+        guard let refinement = refinements[variant]?.first(where: { $0.id == id }) else { return }
         selected = [refinement.root.node]
     }
 
@@ -576,20 +736,33 @@ public final class FitModel {
 
     private var selectedInner: Inner? {
         guard let selection else { return nil }
+        if selection.isTile {
+            // A refined tile, as long as its refinement is shown on this level.
+            let all = tileRefinements[variant] ?? []
+            return shownTileRefinements(mode: variant, level: shownStop)
+                .first { all[$0].path == selection.path }
+                .map { all[$0].inner }
+        }
         return shownLevel?.picture.inner(at: selection)
+    }
+
+    /// Whether the Level slider steps through the levels of the selected region's
+    /// refinement, as opposed to the picture's own levels.
+    public var sliderStepsSelection: Bool {
+        isTiling ? selectedInner != nil : !selected.isEmpty
     }
 
     /// The Level slider's position: within the selected region's refinement, or within the
     /// picture's own levels when nothing is selected.
     public var sliderStop: Int {
-        selected.isEmpty || isTiling ? shownStop : (selectedInner?.shownIndex ?? 0)
+        sliderStepsSelection ? (selectedInner?.shownIndex ?? 0) : shownStop
     }
 
     /// The slider's last position. With several regions selected there is no one set of
     /// levels to step through, so it is 0.
     public var sliderLast: Int {
-        selected.isEmpty || isTiling
-            ? max(levels.count - 1, 0) : max((selectedInner?.levels.count ?? 1) - 1, 0)
+        sliderStepsSelection
+            ? max((selectedInner?.levels.count ?? 1) - 1, 0) : max(levels.count - 1, 0)
     }
 
     public nonisolated static func caption(
@@ -633,6 +806,7 @@ public final class FitModel {
         photo = loaded
         results = [:]
         refinements = [:]
+        tileRefinements = [:]
         stop = 0
         followsLatest = true
         status = .idle
@@ -663,6 +837,7 @@ public final class FitModel {
             : stageSchedule(totalShapes: runSettings.totalShapes).count
         results[mode] = []
         refinements[mode] = []
+        tileRefinements[mode] = []
         stop = 0
         followsLatest = true
         fittingMode = mode
@@ -695,9 +870,8 @@ public final class FitModel {
         }
     }
 
-    /// Refining is for curves: a tile can only be cut further by fitting more tiles.
     public var canRefine: Bool {
-        !selected.isEmpty && !isFitting && shownLevel != nil && photoURL != nil && !isTiling
+        !selected.isEmpty && !isFitting && shownLevel != nil && photoURL != nil
     }
 
     /// Fits finer shapes inside each selected region of the level shown, using the current
@@ -717,9 +891,11 @@ public final class FitModel {
         let picture = level.picture
         depthLimit = nil
         isRefining = true
-        status = .fitting(
-            stage: 0,
-            stageCount: stageSchedule(totalShapes: runSettings.totalShapes).count * nodes.count)
+        let stagesEach =
+            runSettings.kind == .tiles
+            ? tileSchedule(totalTiles: runSettings.totalShapes, order: runSettings.tileOrder).count
+            : stageSchedule(totalShapes: runSettings.totalShapes).count
+        status = .fitting(stage: 0, stageCount: stagesEach * nodes.count)
 
         generation += 1
         let run = generation
@@ -755,9 +931,13 @@ public final class FitModel {
                     stage: stages.reduce(0, +), stageCount: progress.stageCount * nodes.count)
                 if let level = progress.finishedLevel {
                     finished[index].append(level)
-                    self.writeInner(
-                        Inner(levels: finished[index], shown: finished[index].count - 1),
-                        at: nodes[index], mode: mode, level: rootStop)
+                    let inner = Inner(levels: finished[index], shown: finished[index].count - 1)
+                    if nodes[index].isTile {
+                        self.writeTileInner(
+                            inner, at: nodes[index], mode: mode, level: rootStop, afresh: true)
+                    } else {
+                        self.writeInner(inner, at: nodes[index], mode: mode, level: rootStop)
+                    }
                 }
             }
             guard let self, self.generation == run else { return }
@@ -780,6 +960,12 @@ public final class FitModel {
     public func userMovedSlider(to newStop: Int) {
         guard !isRefining else { return }
         guard selected.count <= 1 || isTiling else { return }
+        if let selection, isTiling, sliderStepsSelection {
+            guard var inner = selectedInner, !inner.levels.isEmpty else { return }
+            inner.shown = max(0, min(newStop, inner.levels.count - 1))
+            writeTileInner(inner, at: selection, mode: variant, level: shownStop, afresh: false)
+            return
+        }
         if let selection, !isTiling {
             guard var inner = selectedInner, !inner.levels.isEmpty, levels.indices.contains(shownStop)
             else { return }

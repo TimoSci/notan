@@ -89,15 +89,24 @@ public func xingLoss(points: MLXArray) -> MLXArray {
 
 /// The error terms of `fitLoss` alone: image, target [H, W, 3]; boundaryDistance [H, W].
 /// Boundary-weighted error plus the plain error floor. For tiles, which have no curves to
-/// keep in shape.
+/// keep in shape. With `mask` [H, W], only the masked pixels count.
 public func tileLoss(
-    image: MLXArray, target: MLXArray, boundaryDistance: MLXArray, config: LossConfig
+    image: MLXArray, target: MLXArray, boundaryDistance: MLXArray, config: LossConfig,
+    mask: MLXArray? = nil
 ) -> MLXArray {
     let diff = image - target
-    let squared = (diff * diff).sum(axis: -1)  // [H, W]
-    let weight = stopGradient(maximum(1 - boundaryDistance / config.boundaryReach, 0))
+    var squared = (diff * diff).sum(axis: -1)  // [H, W]
+    var weight = stopGradient(maximum(1 - boundaryDistance / config.boundaryReach, 0))
+    let floor: MLXArray
+    if let mask {
+        squared = squared * mask
+        weight = weight * mask
+        floor = squared.sum() / (mask.sum() + 1e-6)
+    } else {
+        floor = squared.mean()
+    }
     let weighted = (weight * squared).sum() / (weight.sum() + 1e-6)
-    return weighted + config.floorWeight * squared.mean()
+    return weighted + config.floorWeight * floor
 }
 
 /// image, target [H, W, 3]; boundaryDistance [H, W]; points [P, 12, 2] of the shapes that

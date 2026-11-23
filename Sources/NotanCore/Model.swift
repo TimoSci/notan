@@ -63,14 +63,17 @@ public struct Shape: Equatable, Sendable {
 }
 
 /// One level of a refinement: the shapes inside a region after a stage, and how far the
-/// region then was from the photo.
+/// region then was from the photo. For a refined tile, the tiles it is cut into, which
+/// take its place.
 public struct InnerLevel: Equatable, Sendable {
     public var shapes: [Shape]
     public var mse: Float
+    public var tiles: [Tile]
 
-    public init(shapes: [Shape], mse: Float) {
+    public init(shapes: [Shape], mse: Float, tiles: [Tile] = []) {
         self.shapes = shapes
         self.mse = mse
+        self.tiles = tiles
     }
 }
 
@@ -90,6 +93,9 @@ public struct Inner: Equatable, Sendable {
 
     /// The shapes of the level shown.
     public var shapes: [Shape] { levels.isEmpty ? [] : levels[shownIndex].shapes }
+
+    /// The tiles of the level shown.
+    public var tiles: [Tile] { levels.isEmpty ? [] : levels[shownIndex].tiles }
 }
 
 /// Names a region of a picture: a gap (a patch no shape covers), or a shape reached by
@@ -269,6 +275,18 @@ public struct Picture: Equatable, Sendable {
         let below = tiles.filter { $0.path.starts(with: node.path) }
         if !below.isEmpty { return below }
         return tiles.filter { node.path.starts(with: $0.path) }
+    }
+
+    /// Puts `finer` in place of the tile at `path`, or of the pieces it has been cut into.
+    /// False, and nothing changes, if this picture has no tile there.
+    @discardableResult
+    public mutating func replaceTiles(under path: [Int], with finer: [Tile]) -> Bool {
+        guard let first = tiles.firstIndex(where: { $0.path.starts(with: path) }) else { return false }
+        var kept = tiles
+        kept.removeAll { $0.path.starts(with: path) }
+        kept.insert(contentsOf: finer, at: min(first, kept.count))
+        tiles = kept
+        return true
     }
 
     /// The address to show for a tile address in this picture: itself when it names a tile

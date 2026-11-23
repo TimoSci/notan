@@ -153,4 +153,36 @@ final class TileMeshTests: XCTestCase {
         XCTAssertLessThanOrEqual(tip.x, 106.01)
         XCTAssertEqual(tip.y, 1, accuracy: 0.01)
     }
+
+    // MARK: A tiling of one tile's outline
+
+    /// A five-cornered outline, none of it on the picture's border.
+    let outline: [SIMD2<Float>] = [SIMD2(10, 10), SIMD2(50, 8), SIMD2(54, 30), SIMD2(30, 40), SIMD2(8, 30)]
+
+    func testAMeshCanStartFromAnOutline() {
+        let mesh = TileMesh(width: 64, height: 48, color: grey, outline: outline)
+        XCTAssertEqual(mesh.leaves, [0])
+        XCTAssertEqual(mesh.polygon(0), outline)
+        XCTAssertEqual(mesh.freedom, Array(repeating: .fixed, count: 5))
+    }
+
+    func testSharedCutEndsOnTheOutlineSlideAlongIt() {
+        var mesh = TileMesh(width: 64, height: 48, color: grey, outline: outline)
+        // From the first edge to the third.
+        let made = mesh.cut(
+            0, from: CutEnd(edge: 0, t: 0.5), to: CutEnd(edge: 2, t: 0.5), stage: 1, shareCorners: true)
+        XCTAssertEqual(mesh.freedom[5], .slide(from: 0, to: 1))
+        XCTAssertEqual(mesh.freedom[6], .slide(from: 2, to: 3))
+        // Cut the first piece from the cut line to what is left of the outline's first edge:
+        // that end still slides between the outline's own corners.
+        let first = mesh.nodes[made.first].corners  // 5, 1, 2, 6
+        XCTAssertEqual(first, [5, 1, 2, 6])
+        mesh.cut(
+            made.first, from: CutEnd(edge: 3, t: 0.5), to: CutEnd(edge: 0, t: 0.5), stage: 2,
+            shareCorners: true)
+        XCTAssertEqual(mesh.freedom[7], .free)
+        XCTAssertEqual(mesh.freedom[8], .slide(from: 0, to: 1))
+        XCTAssertTrue(mesh.nodes[made.second].corners.contains(7), "the cut line's new corner is shared")
+        XCTAssertEqual(mesh.invalidLeaves(minArea: 1), [])
+    }
 }

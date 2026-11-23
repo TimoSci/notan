@@ -24,11 +24,8 @@ public struct ContentView: View {
             Divider()
             HStack(spacing: 0) {
                 pictureArea
-                // Refining, and so locking, is for curves.
-                if !model.isTiling {
-                    Divider()
-                    lockPanel
-                }
+                Divider()
+                lockPanel
             }
             Divider()
             levelBar
@@ -158,7 +155,7 @@ public struct ContentView: View {
                     .disabled(!model.canRefine)
                     .help(
                         model.isTiling
-                            ? "Refining is for curves. To cut tiles further, fit again with more tiles."
+                            ? "Cut each selected tile further, zoomed into that part of the photo, using the settings above. The finer tiles take the tile's place. Several tiles are refined side by side."
                             : "Fit finer shapes only inside each selected shape, zoomed into that part of the photo, using the settings above. Several shapes are refined side by side."
                     )
                 // Return starts a fit, but must not restart one that is already running.
@@ -200,11 +197,13 @@ public struct ContentView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .help(
-                    "A refined area is locked: on every later level it stays as it was refined, painted on top. Click the lock to switch that off or on for one area; click a name to go to it."
+                    model.isTiling
+                        ? "With Prefix levels a refined tile is locked: on every later level it stays as it was refined. Click the lock to switch that off or on for one tile; click a name to go to it. With Re-fit levels a tile has another outline on every level, so a refined tile shows only on the level it was refined on."
+                        : "A refined area is locked: on every later level it stays as it was refined, painted on top. Click the lock to switch that off or on for one area; click a name to go to it."
                 )
             Divider()
             if model.lockTree.isEmpty {
-                Text("None yet. Select a shape and choose Refine selection.")
+                Text("None yet. Select a \(model.isTiling ? "tile" : "shape") and choose Refine selection.")
                     .foregroundStyle(.secondary)
                     .padding(12)
                 Spacer()
@@ -248,18 +247,18 @@ public struct ContentView: View {
         if model.selected.isEmpty, !model.isRefining, case .fitting(_, let stageCount) = model.status {
             return "\(model.sliderStop) of \(stageCount)"
         }
-        if model.selected.count > 1 { return "" }
+        if model.selected.count > 1, !model.isTiling { return "" }
         return "\(model.sliderStop) of \(model.sliderLast)"
     }
 
     private var levelBar: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
-                Text(model.selected.isEmpty || model.isTiling ? "Level" : "Level in selection")
+                Text(model.sliderStepsSelection ? "Level in selection" : "Level")
                     .frame(minWidth: 116, alignment: .leading)
                     .help(
                         model.isTiling
-                            ? "Steps through the levels of the picture. Selected tiles stay selected: on a later level as the pieces they were cut into, on an earlier one as the tile they were cut from."
+                            ? "Steps through the levels of the picture, or of the selected tile if it has been refined. Selected tiles stay selected: on a later level as the pieces they were cut into, on an earlier one as the tile they were cut from."
                             : "Steps through the levels of the selected shape, or of the whole picture when nothing is selected. With several shapes selected it is off.")
                 Slider(
                     value: Binding(

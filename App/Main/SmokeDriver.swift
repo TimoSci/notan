@@ -109,10 +109,48 @@
                 } catch {
                     note("export failed: \(error.localizedDescription)")
                 }
+                // Refine a tile of the Prefix result, then see it stay on a later level.
+                model.settings.totalShapes = 16
+                model.userMovedSlider(to: 3)
+                await pause(0.2)
+                if let picture = model.shownPicture {
+                    model.select(at: SIMD2(Float(picture.width) * 0.5, Float(picture.height) * 0.6))
+                }
+                note("to refine: \(model.selectionLabel), canRefine=\(model.canRefine)")
+                model.refine()
+                await wait("tile refine: done") { !model.isFitting }
+                snapshot("t9a-tile-refined")
+                note("after tile refine: status=\(model.status) slider=\(model.sliderStop)/\(model.sliderLast) error=\(model.errorMessage ?? "nil") tree=\(model.lockTree.map { "\($0.title): \(($0.children ?? []).map(\.title))" })")
+                model.select(at: nil)
+                model.userMovedSlider(to: model.levels.count - 1)
+                await pause(0.2)
+                snapshot("t9b-locked-on-last-level")
+                do {
+                    try model.exportSVG(to: folder.appendingPathComponent("tiles-refined.svg"))
+                } catch {
+                    note("export failed: \(error.localizedDescription)")
+                }
+                if let area = model.lockTree.first?.children?.first {
+                    model.setLocked(false, area: area)
+                    await pause(0.2)
+                    snapshot("t9c-unlocked-last-level")
+                }
+
+                model.settings.totalShapes = 64
                 model.settings.tileOrder = .worst
                 model.settings.mode = .refit
                 await pause(0.2)
                 snapshot("t10-back-to-worst-refit")
+                // And a tile of the Re-fit result.
+                model.settings.totalShapes = 16
+                if let picture = model.shownPicture {
+                    model.select(at: SIMD2(Float(picture.width) * 0.5, Float(picture.height) * 0.6))
+                }
+                model.refine()
+                await wait("refit tile refine: done") { !model.isFitting }
+                snapshot("t10a-refit-tile-refined")
+                note("after refit tile refine: status=\(model.status) \(model.caption) error=\(model.errorMessage ?? "nil")")
+                model.select(at: nil)
                 model.settings.kind = .curves
                 await pause(0.2)
                 snapshot("t11-curves-nothing-fitted")

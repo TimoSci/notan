@@ -137,6 +137,21 @@ public struct TileMesh: Equatable, Sendable {
         nodes = [TileNode(corners: [0, 1, 2, 3], color: color, path: [], children: [], stage: 0)]
     }
 
+    /// A tiling of one tile only: the whole is the polygon `outline` (corners in the order
+    /// of a sound tile), and its corners never move. For cutting an existing tile further.
+    /// `width` and `height` are those of the picture the outline lies in.
+    public init(width: Int, height: Int, color: RGB, outline: [SIMD2<Float>]) {
+        precondition(width >= 1 && height >= 1 && outline.count >= 3)
+        self.width = width
+        self.height = height
+        points = outline
+        freedom = Array(repeating: .fixed, count: outline.count)
+        nodes = [
+            TileNode(
+                corners: Array(outline.indices), color: color, path: [], children: [], stage: 0)
+        ]
+    }
+
     /// The uncut tiles, by node index, ascending.
     public var leaves: [Int] { nodes.indices.filter { nodes[$0].children.isEmpty } }
 
@@ -175,10 +190,11 @@ public struct TileMesh: Equatable, Sendable {
             let h = Float(height)
             if (a.y == 0 && b.y == 0) || (a.y == h && b.y == h) {
                 freedom.append(.alongX)
-            } else if (a.x == 0 && b.x == 0) || (a.x == w && b.x == w) {
+                return index
+            }
+            if (a.x == 0 && b.x == 0) || (a.x == w && b.x == w) {
                 freedom.append(.alongY)
-            } else {
-                freedom.append(.free)
+                return index
             }
             // The neighbour across this edge has it the other way round.
             for other in nodes.indices where other != leaf && nodes[other].children.isEmpty {
@@ -186,8 +202,18 @@ public struct TileMesh: Equatable, Sendable {
                 for position in theirs.indices
                 where theirs[position] == finish && theirs[(position + 1) % theirs.count] == start {
                     nodes[other].corners.insert(index, at: position + 1)
+                    freedom.append(.free)
                     return index
                 }
+            }
+            // No neighbour: the edge is part of the outline the tiling started from, and
+            // the cut end stays on that outline's edge, between its two corners.
+            if case .slide = freedom[start] {
+                freedom.append(freedom[start])
+            } else if case .slide = freedom[finish] {
+                freedom.append(freedom[finish])
+            } else {
+                freedom.append(.slide(from: start, to: finish))
             }
             return index
         }
