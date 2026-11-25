@@ -125,9 +125,8 @@ public struct ContentView: View {
                 )
                 Toggle("Gradients", isOn: $model.settings.gradients)
                     .toggleStyle(.checkbox)
-                    .disabled(model.isTiling)
                     .help(
-                        "Fills each shape with a linear gradient between two colours instead of one flat colour. Smooth areas such as sky come closer to the photo; each shape costs 11 more bytes."
+                        "Fills each shape or tile with a linear gradient between two colours instead of one flat colour. Smooth areas such as sky come closer to the photo; each one costs 11 more bytes."
                     )
                 LabeledContent("Steps") {
                     TextField("Steps", value: $model.settings.stepsPerStage, format: .number)

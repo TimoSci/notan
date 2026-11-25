@@ -112,6 +112,62 @@ final class TilePictureTests: XCTestCase {
         XCTAssertEqual(picture.estimatedBytes, 3 + 2 * 3 + 6 * 4)
     }
 
+    // MARK: Gradient fills
+
+    /// One tile over the whole 64×48 picture, black at the left edge running to white at
+    /// the right.
+    func rampPicture() -> NotanCore.Picture {
+        var mesh = TileMesh(width: 64, height: 48, color: .black)
+        mesh.setGradient(0, Gradient(from: SIMD2(0, 24), to: SIMD2(64, 24), endColor: .white))
+        return tilePicture(mesh)
+    }
+
+    func testATileCarriesItsGradientIntoThePicture() {
+        XCTAssertEqual(rampPicture().tiles[0].gradient?.endColor, .white)
+        XCTAssertNil(tilePicture(fourTileMesh()).tiles[0].gradient)
+    }
+
+    func testATileWithAGradientIsDrawnAsARamp() throws {
+        let rgb = try pixels(rampPicture(), width: 64, height: 48)
+        func red(_ x: Int, _ y: Int) -> Float { rgb[(y * 64 + x) * 3] }
+        XCTAssertEqual(red(8, 10), 8.5 / 64, accuracy: 0.03)
+        XCTAssertEqual(red(32, 40), 32.5 / 64, accuracy: 0.03)
+        XCTAssertEqual(red(56, 24), 56.5 / 64, accuracy: 0.03)
+    }
+
+    func testNoSeamShowsBetweenTilesWithGradients() throws {
+        var mesh = fourTileMesh()
+        for leaf in mesh.leaves {
+            mesh.setGradient(leaf, Gradient(from: SIMD2(0, 0), to: SIMD2(64, 48), endColor: .white))
+        }
+        let rgb = try pixels(tilePicture(mesh), width: 211, height: 158)
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(rgb.min()), 254.0 / 255)
+    }
+
+    func testSVGWritesATilesGradientForItsFillAndItsOutline() throws {
+        let text = svg(rampPicture(), outputSize: CGSize(width: 640, height: 480))
+        XCTAssertTrue(XMLParser(data: Data(text.utf8)).parse())
+        XCTAssertTrue(text.contains("<linearGradient id=\"g1\" gradientUnits=\"userSpaceOnUse\" x1=\"0\" y1=\"24\" x2=\"64\" y2=\"24\">"))
+        XCTAssertTrue(text.contains("stop-color=\"#000000\""))
+        XCTAssertTrue(text.contains("stop-color=\"#ffffff\""))
+        let polygon = try XCTUnwrap(text.split(separator: "\n").first { $0.hasPrefix("<polygon") })
+        XCTAssertTrue(polygon.contains("fill=\"url(#g1)\" stroke=\"url(#g1)\""))
+    }
+
+    func testATilesGradientCostsElevenBytes() {
+        var mesh = TileMesh(width: 64, height: 48, color: .white)
+        mesh.cut(0, from: CutEnd(edge: 0, t: 0.5), to: CutEnd(edge: 2, t: 0.5), stage: 1, shareCorners: false)
+        let flat = tilePicture(mesh).estimatedBytes
+        mesh.setGradient(mesh.leaves[0], Gradient(from: SIMD2(0, 0), to: SIMD2(9, 9), endColor: .black))
+        XCTAssertEqual(tilePicture(mesh).estimatedBytes, flat + 11)
+    }
+
+    func testMeasuredMSEIsNearZeroForARampDrawnAsItsOwnTarget() throws {
+        let picture = rampPicture()
+        let target = TargetImage(width: 64, height: 48, pixels: try pixels(picture, width: 64, height: 48))
+        XCTAssertLessThan(measuredMSE(picture, against: target), 1e-4)
+    }
+
     func testMeasuredMSEIsNearZeroForAPictureOfItself() throws {
         // Upright and level cuts on whole pixels, so every pixel lies in one tile.
         var mesh = TileMesh(width: 64, height: 48, color: .white)

@@ -63,6 +63,7 @@
             if environment["NOTAN_SMOKE_TILES"] != nil {
                 model.settings.kind = .tiles
                 model.settings.totalShapes = 64
+                model.settings.gradients = environment["NOTAN_SMOKE_GRADIENTS"] != nil
                 await pause(0.3)
                 snapshot("t1-tiles-chosen")
                 model.start()

@@ -179,9 +179,26 @@ private struct Painter {
             let band = path.copy(
                 strokingWithWidth: tileSeamWidth / scale, lineCap: .butt, lineJoin: .round,
                 miterLimit: 1)
-            context.setFillColor(color(tile.color, for: .tile(tile.path)))
-            context.addPath(path.union(band, using: .winding))
-            context.fillPath(using: .winding)
+            let area = path.union(band, using: .winding)
+            if case .normal = style, let gradient = tile.gradient,
+                let ramp = CGGradient(
+                    colorsSpace: CGColorSpace(name: CGColorSpace.sRGB),
+                    colors: [cgColor(tile.color), cgColor(gradient.endColor)] as CFArray,
+                    locations: [0, 1])
+            {
+                context.saveGState()
+                context.addPath(area)
+                context.clip(using: .winding)
+                context.drawLinearGradient(
+                    ramp, start: CGPoint(x: CGFloat(gradient.from.x), y: CGFloat(gradient.from.y)),
+                    end: CGPoint(x: CGFloat(gradient.to.x), y: CGFloat(gradient.to.y)),
+                    options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+                context.restoreGState()
+            } else {
+                context.setFillColor(color(tile.color, for: .tile(tile.path)))
+                context.addPath(area)
+                context.fillPath(using: .winding)
+            }
         }
     }
 

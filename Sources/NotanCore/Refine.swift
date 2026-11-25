@@ -215,7 +215,12 @@ public struct Refiner {
                 tiles: level.picture.tiles.map {
                     Tile(
                         corners: $0.corners.map { $0 * scale + origin }, color: $0.color,
-                        path: node.path + $0.path)
+                        path: node.path + $0.path,
+                        gradient: $0.gradient.map {
+                            Gradient(
+                                from: $0.from * scale + origin, to: $0.to * scale + origin,
+                                endColor: $0.endColor)
+                        })
                 })
         }
         let fitter = TileFitter(

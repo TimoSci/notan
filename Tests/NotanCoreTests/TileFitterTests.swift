@@ -441,4 +441,60 @@ final class TileFitterTests: XCTestCase {
             XCTAssertLessThan(try XCTUnwrap(levels.last).mse, 0.03, "\(mode)")
         }
     }
+
+    // MARK: Gradient fills
+
+    /// Left half: black at the top running to white at the bottom. Right half: flat blue.
+    let rampAndFlat = makeTarget(width: 32, height: 32) { x, y in
+        x < 16 ? RGB(r: (y + 0.5) / 32, g: (y + 0.5) / 32, b: (y + 0.5) / 32) : .blue
+    }
+
+    func testTilesAreFlatUnlessGradientsAreAskedFor() {
+        var asked = settings(4, .worst, .refit)
+        XCTAssertTrue(fit(rampAndFlat, asked).allSatisfy { $0.picture.tiles.allSatisfy { $0.gradient == nil } })
+        asked.gradients = true
+        let levels = fit(rampAndFlat, asked)
+        XCTAssertTrue(levels.dropFirst().allSatisfy { $0.picture.tiles.allSatisfy { $0.gradient != nil } })
+    }
+
+    func testGradientsFitARampThatFlatTilesCannot() throws {
+        for mode in LevelMode.allCases {
+            var asked = settings(2, .worst, mode, steps: 150)
+            let flat = try XCTUnwrap(fit(rampAndFlat, asked).last)
+            asked.gradients = true
+            let ramped = try XCTUnwrap(fit(rampAndFlat, asked).last)
+            XCTAssertEqual(ramped.picture.tiles.count, 2)
+            XCTAssertLessThan(ramped.mse, 0.2 * flat.mse, "\(mode)")
+            assertTilesThePicture(ramped)
+        }
+    }
+
+    func testPrefixTilesKeepTheirFillOnLaterLevelsWithGradients() {
+        var asked = settings(6, .worst, .prefix)
+        asked.gradients = true
+        let levels = fit(noise, asked)
+        for (level, next) in zip(levels, levels.dropFirst()) {
+            // A tile that was not cut is the same tile, fill and all, on the next level.
+            for tile in level.picture.tiles where next.picture.tiles.contains(where: { $0.path == tile.path }) {
+                XCTAssertTrue(next.picture.tiles.contains(tile))
+            }
+        }
+    }
+
+    func testGradientFitsAreReproducible() {
+        var asked = settings(6, .worst, .refit)
+        asked.gradients = true
+        XCTAssertEqual(fit(noise, asked).map(\.picture), fit(noise, asked).map(\.picture))
+    }
+
+    func testGradientColoursStayInRange() {
+        var asked = settings(6, .worst, .refit)
+        asked.gradients = true
+        for tile in fit(noise, asked).last!.picture.tiles {
+            let end = tile.gradient!.endColor
+            for value in [tile.color.r, tile.color.g, tile.color.b, end.r, end.g, end.b] {
+                XCTAssertTrue((0...1).contains(value))
+            }
+        }
+    }
 }

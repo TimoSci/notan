@@ -127,6 +127,25 @@ final class TileRefineTests: XCTestCase {
         }
     }
 
+    func testRefinedTilesCarryGradientsInPictureCoordinates() throws {
+        var settings = FitSettings()
+        settings.kind = .tiles
+        settings.totalShapes = 3
+        settings.stepsPerStage = 20
+        settings.workingSize = 64
+        settings.gradients = true
+        let levels = try Refiner(photoURL: photo(), picture: fourTiles(), node: .tile([0]), settings: settings)
+            .run(progress: { _ in }, isCancelled: { false })
+        for tile in try XCTUnwrap(levels.last).tiles {
+            let gradient = try XCTUnwrap(tile.gradient)
+            // Tile [0] is the right-hand half of the 64×48 picture; the fit ran zoomed in,
+            // at other coordinates. The axis starts across the tile.
+            for end in [gradient.from, gradient.to] {
+                XCTAssertTrue(end.x > 20 && end.x < 76 && end.y > -12 && end.y < 60, "\(end)")
+            }
+        }
+    }
+
     func testRefiningOneTileStartsFromItsOutline() throws {
         let tile = fourTiles().tiles[2]
         let levels = try refine(.tile(tile.path), mode: .prefix, tiles: 3)

@@ -107,6 +107,8 @@ public struct TileNode: Equatable, Sendable {
     /// been cut: only the uncut tiles have outlines.
     public var corners: [Int]
     public var color: RGB
+    /// A linear gradient in place of the flat colour. A tile cut from this one starts flat.
+    public var gradient: Gradient? = nil
     /// 0 or 1 at each cut from the whole picture down to this tile.
     public var path: [Int]
     /// The two tiles it was cut into, or none.
@@ -249,6 +251,7 @@ public struct TileMesh: Equatable, Sendable {
     public mutating func setPoint(_ index: Int, _ point: SIMD2<Float>) { points[index] = point }
 
     public mutating func setColor(_ node: Int, _ color: RGB) { nodes[node].color = color }
+    public mutating func setGradient(_ node: Int, _ gradient: Gradient?) { nodes[node].gradient = gradient }
 
     /// The uncut tiles that are not sound: outline crossing itself, area below `minArea`
     /// (which includes a tile turned inside out, or with a corner that is not a number),
@@ -263,6 +266,10 @@ public struct TileMesh: Equatable, Sendable {
 
     /// The uncut tiles, in the order of `leaves`.
     public func tiles() -> [Tile] {
-        leaves.map { Tile(corners: polygon($0), color: nodes[$0].color, path: nodes[$0].path) }
+        leaves.map {
+            Tile(
+                corners: polygon($0), color: nodes[$0].color, path: nodes[$0].path,
+                gradient: nodes[$0].gradient)
+        }
     }
 }

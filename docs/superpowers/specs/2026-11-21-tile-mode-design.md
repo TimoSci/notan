@@ -33,7 +33,7 @@ Everything below is the designer's call.
 ## Non-goals (this plan)
 
 - The depth slider in tile mode.
-- Gradient fills and the "Folds" setting in tile mode.
+- The "Folds" setting in tile mode. (Gradient fills were a non-goal at first; see below.)
 - Bent cuts. A cut is one straight segment.
 - A compact byte format for tiles. The byte figure is an estimate.
 
@@ -136,6 +136,20 @@ The owner asked for refinement in tile mode, on these rules, proposed by the des
   on the level it was refined on.
 - A tile inside a refined tile can be refined in turn. It belongs to the level of the
   outer refinement it was made on. Refining the outer tile again drops it.
+
+### Gradient fills (added 2026-11-25)
+
+The owner asked for gradients in tile mode too.
+
+- With Gradients on, every tile is filled with a linear gradient, as a curved shape is:
+  a second colour and the two ends of an axis, fitted along with the corners and colours.
+- A new tile starts flat, in the colour the cut search gave it, with its axis across its
+  middle; the two colours part as the fit finds a slope.
+- Cuts are still chosen by flat colour. Choosing them by what the gradient fill still
+  gets wrong was tried and was worse: on the test photo the error rose by a quarter, and
+  the strict tree ran out of cuts early.
+- With Prefix levels a tile's gradient is frozen with its outline.
+- A gradient adds 11 bytes to a tile's estimate, as for a shape.
 
 ## Left to the builder
 

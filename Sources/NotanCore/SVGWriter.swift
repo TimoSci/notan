@@ -48,22 +48,25 @@ public func svg(_ picture: Picture, outputSize: CGSize, maxDepth: Int = .max) ->
         return d + "Z"
     }
 
+    /// What to fill with: the colour, or a reference to a gradient written just before.
+    func paint(_ color: RGB, _ gradient: Gradient?) -> String {
+        guard let gradient else { return hex(color) }
+        gradientCount += 1
+        let id = "g\(gradientCount)"
+        lines.append(
+            "<linearGradient id=\"\(id)\" gradientUnits=\"userSpaceOnUse\" "
+                + "x1=\"\(number(gradient.from.x))\" y1=\"\(number(gradient.from.y))\" "
+                + "x2=\"\(number(gradient.to.x))\" y2=\"\(number(gradient.to.y))\">"
+                + "<stop offset=\"0\" stop-color=\"\(hex(color))\"/>"
+                + "<stop offset=\"1\" stop-color=\"\(hex(gradient.endColor))\"/>"
+                + "</linearGradient>")
+        return "url(#\(id))"
+    }
+
     func write(_ shapes: [Shape], depthLeft: Int) {
         for shape in shapes {
             let d = pathData(shape)
-            var fill = hex(shape.color)
-            if let gradient = shape.gradient {
-                gradientCount += 1
-                let id = "g\(gradientCount)"
-                lines.append(
-                    "<linearGradient id=\"\(id)\" gradientUnits=\"userSpaceOnUse\" "
-                        + "x1=\"\(number(gradient.from.x))\" y1=\"\(number(gradient.from.y))\" "
-                        + "x2=\"\(number(gradient.to.x))\" y2=\"\(number(gradient.to.y))\">"
-                        + "<stop offset=\"0\" stop-color=\"\(hex(shape.color))\"/>"
-                        + "<stop offset=\"1\" stop-color=\"\(hex(gradient.endColor))\"/>"
-                        + "</linearGradient>")
-                fill = "url(#\(id))"
-            }
+            let fill = paint(shape.color, shape.gradient)
             lines.append("<path d=\"\(d)\" fill=\"\(fill)\" fill-rule=\"nonzero\"/>")
             guard depthLeft > 0, let children = shape.inner?.shapes, !children.isEmpty else {
                 continue
@@ -110,7 +113,7 @@ public func svg(_ picture: Picture, outputSize: CGSize, maxDepth: Int = .max) ->
     let seam = Float(tileSeamWidth) * Float(picture.width) / Float(max(outputSize.width, 1))
     for tile in picture.tiles {
         let points = tile.corners.map { "\(number($0.x)),\(number($0.y))" }.joined(separator: " ")
-        let color = hex(tile.color)
+        let color = paint(tile.color, tile.gradient)
         lines.append(
             "<polygon points=\"\(points)\" fill=\"\(color)\" stroke=\"\(color)\" "
                 + "stroke-width=\"\(number(seam))\" stroke-linejoin=\"round\"/>")

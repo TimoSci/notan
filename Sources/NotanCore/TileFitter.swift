@@ -109,6 +109,34 @@ public struct TileFitter {
                 nodes.flatMap { [mesh.nodes[$0].color.r, mesh.nodes[$0].color.g, mesh.nodes[$0].color.b] },
                 [nodes.count, 3])
         }
+        // With gradients: each tile's second colour, and the two ends of its axis.
+        let ramps = settings.gradients
+        func endColoursArray(_ nodes: [Int]) -> MLXArray {
+            MLXArray(
+                nodes.flatMap { node -> [Float] in
+                    let end = mesh.nodes[node].gradient?.endColor ?? mesh.nodes[node].color
+                    return [end.r, end.g, end.b]
+                }, [nodes.count, 3])
+        }
+        func axesArray(_ nodes: [Int]) -> MLXArray {
+            MLXArray(
+                nodes.flatMap { node -> [Float] in
+                    let from = mesh.nodes[node].gradient?.from ?? SIMD2(0, 0)
+                    let to = mesh.nodes[node].gradient?.to ?? SIMD2(1, 0)
+                    return [from.x, from.y, to.x, to.y]
+                }, [nodes.count, 2, 2])
+        }
+        /// The fill a new tile starts with: flat, its axis across its middle from side to
+        /// side. The two colours part as the fit finds a slope.
+        func flatRamp(_ node: Int) -> Gradient {
+            let polygon = mesh.polygon(node)
+            let middle = polygon.reduce(SIMD2<Float>(0, 0), +) / Float(polygon.count)
+            let low = polygon.map(\.x).min() ?? middle.x
+            let high = polygon.map(\.x).max() ?? middle.x
+            return Gradient(
+                from: SIMD2(low, middle.y), to: SIMD2(max(high, low + 1), middle.y),
+                endColor: mesh.nodes[node].color)
+        }
         func crops(_ nodes: [Int]) -> [PixelRect] {
             nodes.map {
                 cropRect(points: mesh.polygon($0), margin: cropMargin, width: width, height: height)
@@ -142,6 +170,7 @@ public struct TileFitter {
             // The search's own placing of each cut, to fall back on.
             var placed: [SIMD2<Float>] = []
             var placedColours: [RGB] = []
+            var placedRamps: [Gradient?] = []
             for (leaf, _) in candidates.prefix(cutCount) {
                 // Sharing an earlier cut's end may have given this tile a new corner.
                 guard let choice = search(leaf) else { continue }
@@ -149,9 +178,14 @@ public struct TileFitter {
                     leaf, from: choice.from, to: choice.to, stage: stage, shareCorners: sharesCorners)
                 mesh.setColor(made.first, choice.firstColor)
                 mesh.setColor(made.second, choice.secondColor)
+                if ramps {
+                    mesh.setGradient(made.first, flatRamp(made.first))
+                    mesh.setGradient(made.second, flatRamp(made.second))
+                }
                 children += [made.first, made.second]
                 placed += mesh.points.suffix(2)
-                placedColours += [choice.firstColor, choice.secondColor]
+                placedColours += [mesh.nodes[made.first].color, mesh.nodes[made.second].color]
+                placedRamps += [mesh.nodes[made.first].gradient, mesh.nodes[made.second].gradient]
             }
             // Nothing left that may be cut: the tiling is as fine as it gets.
             if children.isEmpty { break }
@@ -204,6 +238,7 @@ public struct TileFitter {
                 }
                 parameters = [MLXArray(distances), coloursArray(movable)]
             }
+            if ramps { parameters += [endColoursArray(movable), axesArray(movable)] }
             let slideFromArray = pointsArray(slideFrom[...])
             let slideAlongArray = pointsArray(slideAlong[...])
             let slideLow = MLXArray(slideLength.map { $0 * 0.05 })
@@ -224,16 +259,28 @@ public struct TileFitter {
                     mesh.setPoint(index, SIMD2(flat[index * 2], flat[index * 2 + 1]))
                 }
                 let colours = parameters[1].asArray(Float.self)
+                let ends = ramps ? parameters[2].asArray(Float.self) : []
+                let axes = ramps ? parameters[3].asArray(Float.self) : []
                 for (index, node) in movable.enumerated() {
                     mesh.setColor(
                         node,
                         RGB(r: colours[index * 3], g: colours[index * 3 + 1], b: colours[index * 3 + 2]))
+                    guard ramps else { continue }
+                    mesh.setGradient(
+                        node,
+                        Gradient(
+                            from: SIMD2(axes[index * 4], axes[index * 4 + 1]),
+                            to: SIMD2(axes[index * 4 + 2], axes[index * 4 + 3]),
+                            endColor: RGB(
+                                r: ends[index * 3], g: ends[index * 3 + 1], b: ends[index * 3 + 2])))
                 }
             }
 
             // Every tile is painted, the ones that are not being fitted with the colours
             // they have: `colourSource` lists the mesh's colours, then the parameters'.
             let fixedColours = coloursArray(allLeaves)
+            let fixedEnds = endColoursArray(allLeaves)
+            let fixedAxes = axesArray(allLeaves)
             let colourSource = MLXArray(
                 allLeaves.enumerated().map { index, leaf in
                     Int32(movable.firstIndex(of: leaf).map { allLeaves.count + $0 } ?? index)
@@ -269,12 +316,23 @@ public struct TileFitter {
                     // `TileEdgeLayout.pointGradient`.
                     let outline = arrays[0]
                     let colours = take(concatenated([fixedColours, arrays[1]], axis: 0), colourSource, axis: 0)
+                    // The tiles' gradients, drawn from the same two sources as the colours.
+                    var fills: (axes: MLXArray, endColors: MLXArray)?
+                    var underFills: (axes: MLXArray, endColors: MLXArray)?
+                    if ramps {
+                        let ends = take(concatenated([fixedEnds, arrays[2]], axis: 0), colourSource, axis: 0)
+                        let axes = take(concatenated([fixedAxes, arrays[3]], axis: 0), colourSource, axis: 0)
+                        fills = (axes, ends)
+                        underFills = (
+                            take(axes, reversedColours, axis: 0), take(ends, reversedColours, axis: 0)
+                        )
+                    }
                     let under = rasterizer.render(
                         edges: underEdges, colors: take(colours, reversedColours, axis: 0),
-                        background: background, crops: underCrops)
+                        background: background, crops: underCrops, gradients: underFills)
                     let (image, boundary) = rasterizer.render(
                         edges: allLayout.edges(outline: outline), colors: colours, background: background,
-                        crops: allCrops, over: (under.image, farAway))
+                        crops: allCrops, over: (under.image, farAway), gradients: fills)
                     // Keeps a tile from shrinking away to nothing.
                     let shrunk =
                         maximum(minTileArea - allLayout.areas(outline: outline), 0).sum() / minTileArea
@@ -283,15 +341,16 @@ public struct TileFitter {
                             image: image, target: targetArray, boundaryDistance: boundary,
                             config: lossConfig, mask: lossMask) + areaWeight * shrunk
                     ]
-                }, argumentNumbers: [0, 1])
+                }, argumentNumbers: Array(parameters.indices))
 
-            var adam = Adam(learningRates: [pointRate, colorRate])
+            var adam = Adam(
+                learningRates: ramps ? [pointRate, colorRate, colorRate, pointRate] : [pointRate, colorRate])
             let steps = max(settings.stepsPerStage, 1)
             for step in 1...steps {
                 if isCancelled() { return levels }
                 place()
                 let outline = allLayout.outline(points: points(parameters[0]))
-                let (_, gradients) = onOneStream { lossAndGradient([outline, parameters[1]]) }
+                let (_, gradients) = onOneStream { lossAndGradient([outline] + parameters.dropFirst()) }
                 let byPoint = allLayout.pointGradient(
                     outlineGradient: gradients[0].asArray(Float.self), pointCount: mesh.points.count)
                 let first: MLXArray
@@ -306,19 +365,19 @@ public struct TileFitter {
                             return byPoint[point] * slideAlong[index].x + byPoint[point + 1] * slideAlong[index].y
                         })
                 }
-                let stepped = adam.step(parameters: parameters, gradients: [first, gradients[1]])
+                let stepped = adam.step(parameters: parameters, gradients: [first] + gradients.dropFirst())
                 if let mask, let rails {
                     // Adam scales each coordinate by itself, which turns a move along a
                     // slanted outline edge off that edge: keep only the part along it.
                     let move = stepped[0] - parameters[0]
-                    parameters = [
-                        parameters[0] + move * mask + rails * (move * rails).sum(axis: 1, keepDims: true),
-                        stepped[1],
-                    ]
+                    parameters =
+                        [parameters[0] + move * mask + rails * (move * rails).sum(axis: 1, keepDims: true)]
+                        + stepped.dropFirst()
                 } else {
                     parameters = stepped
                 }
                 parameters[1] = clip(parameters[1], min: 0, max: 1)
+                if ramps { parameters[2] = clip(parameters[2], min: 0, max: 1) }
                 if !sharesCorners { parameters[0] = clip(parameters[0], min: slideLow, max: slideHigh) }
                 eval(parameters)
                 let before = mesh.points
@@ -359,6 +418,7 @@ public struct TileFitter {
                     for offset in 0..<2 {
                         mesh.setPoint(firstNewPoint + pair * 2 + offset, placed[pair * 2 + offset])
                         mesh.setColor(children[first + offset], placedColours[pair * 2 + offset])
+                        mesh.setGradient(children[first + offset], placedRamps[pair * 2 + offset])
                     }
                 }
             }

@@ -15,7 +15,7 @@ dark.
   the picture is currently most wrong, and all of them are then adjusted by gradient
   descent. The method follows LIVE (Layer-wise Image Vectorization, Ma et al., CVPR 2022).
 - **Or fits tiles.** Instead of curves, the picture can be cut into straight-edged tiles
-  that share edges and never overlap. Each stage cuts tiles in two with a straight line
+  that share edges and never overlap. Tiles, too, can be filled flat or with gradients. Each stage cuts tiles in two with a straight line
   and then moves the corners to fit. *Strict tree* cuts every tile at every stage, so
   the tile count doubles; *Worst first* cuts only the tiles that gain most.
 - **Keeps every level.** Each stage is one level on a slider, from the background colour
@@ -63,7 +63,7 @@ open ../.build/app/Build/Products/Release/Notan.app
 2. **Choose settings** if you like: *Kind* (*Curves* or *Tiles*) and, for tiles, *Cuts*
    (*Strict tree* or *Worst first*); the number of shapes, the working size, the steps
    per stage, the level mode (*Re-fit* or *Prefix*), and the options *Min width*,
-   *Limit folds* and *Gradients* (the last two are for curves). With *Limit folds* on,
+   *Limit folds* (for curves) and *Gradients*. With *Limit folds* on,
    *Folds* sets how far a shape
    may cross over itself, from *None*, where no outline crosses itself, to *Any*;
    *Strength* sets how firmly shapes are held to that, at some cost in fit. With it

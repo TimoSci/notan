@@ -260,12 +260,12 @@ public struct Picture: Equatable, Sendable {
     }
 
     /// A tile costs its 3 colour bytes; each corner, stored once however many tiles share
-    /// it, costs 2 coordinates of 2 bytes.
+    /// it, costs 2 coordinates of 2 bytes. A gradient adds 11 bytes, as for a shape.
     private var tileBytes: Int {
         guard !tiles.isEmpty else { return 0 }
         var corners = Set<SIMD2<Float>>()
         for tile in tiles { corners.formUnion(tile.corners) }
-        return tiles.count * 3 + corners.count * 4
+        return tiles.count * 3 + corners.count * 4 + tiles.filter { $0.gradient != nil }.count * 11
     }
 
     /// The tiles a tile address stands for in this picture: those cut from it, or itself;
@@ -567,10 +567,13 @@ public struct Tile: Equatable, Sendable {
     /// Where the tile sits in the tree of cuts: at each cut from the whole picture down,
     /// 0 for the first piece or 1 for the second. Empty for the whole picture.
     public var path: [Int]
+    /// A linear gradient in place of the flat colour, as for a shape.
+    public var gradient: Gradient?
 
-    public init(corners: [SIMD2<Float>], color: RGB, path: [Int]) {
+    public init(corners: [SIMD2<Float>], color: RGB, path: [Int], gradient: Gradient? = nil) {
         self.corners = corners
         self.color = color
         self.path = path
+        self.gradient = gradient
     }
 }
