@@ -62,8 +62,12 @@ open ../.build/app/Build/Products/Release/Notan.app
 1. **Open a photo** with *Open…*, or drop one on the window.
 2. **Choose settings** if you like: *Kind* (*Curves* or *Tiles*) and, for tiles, *Cuts*
    (*Strict tree* or *Worst first*); the number of shapes, the working size, the steps
-   per stage, the level mode (*Re-fit* or *Prefix*), and the options *Min width*, *Avoid
-   folds* and *Gradients* (the last two are for curves). Each combination of kind, cuts
+   per stage, the level mode (*Re-fit* or *Prefix*), and the options *Min width*,
+   *Limit folds* and *Gradients* (the last two are for curves). With *Limit folds* on,
+   *Folds* sets how far a shape
+   may cross over itself, from *None*, where no outline crosses itself, to *Any*;
+   *Strength* sets how firmly shapes are held to that, at some cost in fit. With it
+   off, nothing is checked and fitting is faster. Each combination of kind, cuts
    and level mode keeps its own result, so you can switch between them to compare. Hover
    over a control for an explanation.
 3. **Press Start.** The picture updates as it fits; *Cancel* keeps the levels finished so
@@ -101,10 +105,11 @@ It writes one SVG and one PNG per level to the output folder. Options:
 | `--size` | long side of the working copy, in pixels | whole number |
 | `--steps` | optimisation steps per stage | whole number |
 | `--min-width` | narrowest shape allowed, in pixels | number, 0 for no limit |
-| `--folds` | whether shapes may cross over themselves | `avoid`, `allow` |
+| `--folds` | how far shapes may cross over themselves | `avoid`, `allow`, or a number from 0 (none) to 0.5 (any) |
 | `--fill` | flat colour or linear gradient | `flat`, `gradient` |
 
-Run `notan` with no arguments to see the tuning options as well.
+Run `notan` with no arguments to see the tuning options as well; `--fold-weight` is the
+*Strength* setting.
 
 ## Tests
 

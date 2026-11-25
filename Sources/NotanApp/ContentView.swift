@@ -80,12 +80,49 @@ public struct ContentView: View {
                         ? "Keeps tiles from being cut into slivers: no cut may leave a piece thinner than this."
                         : "Keeps shapes from thinning into slivers and spikes. The value is the narrowest allowed at the last level; earlier shapes must be wider."
                 )
-                Toggle("Avoid folds", isOn: $model.settings.avoidFolds)
+                Toggle("Limit folds", isOn: $model.settings.limitsFolds)
                     .toggleStyle(.checkbox)
                     .disabled(model.isTiling)
                     .help(
-                        "Keeps shapes from crossing over themselves into bow-ties, loops and folded lobes. Dents and bulges are unaffected; shapes curled most of the way round something are discouraged."
+                        "Keeps shapes from crossing over themselves, as set by Folds and Strength. Off, shapes may fold as they like: the fit is a little closer and takes about a third less time, and most shapes end up crossing themselves."
                     )
+                LabeledContent("Folds") {
+                    HStack(spacing: 4) {
+                        Slider(
+                            value: $model.settings.foldTolerance,
+                            in: 0...FitSettings.maxFoldTolerance, step: 0.05
+                        )
+                        .frame(width: 80)
+                        Text(FitModel.foldLabel(model.settings.foldTolerance))
+                            .monospacedDigit()
+                            .frame(width: 36, alignment: .leading)
+                    }
+                }
+                .disabled(model.isTiling || !model.settings.limitsFolds)
+                .help(
+                    "How far a shape may fold over itself. At None, no outline crosses itself. At Any, nothing is checked. In between, a shape may fold that far: 100% would be a bow-tie. Thin tails that cross themselves fold very little, so any setting above None lets them through."
+                )
+                LabeledContent("Strength") {
+                    HStack(spacing: 4) {
+                        Slider(
+                            value: Binding(
+                                get: { Double(FitModel.foldStrengthIndex(model.settings.foldStrength)) },
+                                set: {
+                                    model.settings.foldStrength =
+                                        FitModel.foldStrengthChoices[Int($0.rounded())]
+                                }),
+                            in: 0...Double(FitModel.foldStrengthChoices.count - 1), step: 1
+                        )
+                        .frame(width: 60)
+                        Text(FitModel.foldStrengthLabel(model.settings.foldStrength))
+                            .monospacedDigit()
+                            .frame(width: 40, alignment: .leading)
+                    }
+                }
+                .disabled(model.isTiling || model.settings.allowsAnyFold)  // includes Limit folds off
+                .help(
+                    "How strongly shapes are held to the Folds setting. With Folds at None no outline can cross itself whatever this is, and it only sets how much shapes that curl round something are discouraged. With Folds higher, it is what keeps shapes from folding further than allowed. Higher values follow the photo less closely."
+                )
                 Toggle("Gradients", isOn: $model.settings.gradients)
                     .toggleStyle(.checkbox)
                     .disabled(model.isTiling)

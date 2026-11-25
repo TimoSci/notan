@@ -1,7 +1,7 @@
 import Foundation
 import NotanCore
 
-let usage = "usage: notan <image> <outdir> [--mode refit|prefix] [--shapes N] [--size N] [--steps N] [--min-width PX] [--folds avoid|allow] [--fill flat|gradient]\n       [--kind curves|tiles] [--order tree|worst]\n       tuning: [--softness PX] [--floor W] [--reach PX] [--xing W] [--seeds error|paper]\n               [--fold-weight W] [--fold-tolerance T]"
+let usage = "usage: notan <image> <outdir> [--mode refit|prefix] [--shapes N] [--size N] [--steps N] [--min-width PX] [--folds avoid|allow|0…0.5] [--fill flat|gradient]\n       [--kind curves|tiles] [--order tree|worst]\n       tuning: [--softness PX] [--floor W] [--reach PX] [--xing W] [--seeds error|paper]\n               [--fold-weight W]"
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("notan: \(message)\n".utf8))
@@ -44,10 +44,15 @@ while !arguments.isEmpty {
         }
         settings.minWidth = width
     case "--folds":
-        guard value == "allow" || value == "avoid" else {
-            fail("--folds must be allow or avoid, not “\(value)”")
+        // How far a shape may fold over itself: avoid (0), allow (anything), or a number.
+        switch value {
+        case "avoid": settings.foldTolerance = 0
+        case "allow": settings.limitsFolds = false
+        default:
+            guard let tolerance = Float(value), (0...FitSettings.maxFoldTolerance).contains(tolerance)
+            else { fail("--folds must be avoid, allow or a number from 0 to 0.5, not “\(value)”") }
+            settings.foldTolerance = tolerance
         }
-        settings.avoidFolds = value == "avoid"
     case "--fill":
         guard value == "flat" || value == "gradient" else {
             fail("--fill must be flat or gradient, not “\(value)”")
@@ -67,7 +72,7 @@ while !arguments.isEmpty {
     case "--size": settings.workingSize = positiveInt(max: 2048)
     case "--steps": settings.stepsPerStage = positiveInt(max: 100_000)
     // Tuning levers, for experiments.
-    case "--softness", "--floor", "--reach", "--xing", "--fold-weight", "--fold-tolerance":
+    case "--softness", "--floor", "--reach", "--xing", "--fold-weight":
         guard let number = Float(value), number >= 0, number.isFinite else {
             fail("\(argument) must be a non-negative number, not “\(value)”")
         }
@@ -79,8 +84,7 @@ while !arguments.isEmpty {
         case "--reach":
             guard number > 0 else { fail("--reach must be greater than 0") }
             lossConfig.boundaryReach = number
-        case "--fold-weight": lossConfig.foldWeight = number
-        case "--fold-tolerance": lossConfig.foldTolerance = number
+        case "--fold-weight": settings.foldStrength = number
         default: lossConfig.xingWeight = number
         }
     default: fail("unknown option \(argument)\n\(usage)")
@@ -141,10 +145,12 @@ var summary = String(
     format: "total %.1f s, %d levels, peak memory in use %.1f GB", Date().timeIntervalSince(started),
     levels.count, Double(peakFitMemoryBytes()) / 1e9)
 if settings.kind == .curves {
-    let ratios = levels.last?.picture.shapes.map { foldRatio(of: $0) } ?? []
+    let shapes = levels.last?.picture.shapes ?? []
+    let ratios = shapes.map { foldRatio(of: $0) }
+    let crossings = shapes.map { selfCrossings(of: $0) }
     summary += String(
-        format: "; at the last level %d shapes sweep back over 5%%, %d over 15%%, %d over 30%%",
-        ratios.filter { $0 > 0.05 }.count, ratios.filter { $0 > 0.15 }.count,
-        ratios.filter { $0 > 0.3 }.count)
+        format: "; at the last level %d shapes cross themselves (%d crossings), %d sweep back over 5%%, %d over 15%%, most %.3f",
+        crossings.filter { $0 > 0 }.count, crossings.reduce(0, +),
+        ratios.filter { $0 > 0.05 }.count, ratios.filter { $0 > 0.15 }.count, ratios.max() ?? 0)
 }
 print(summary)

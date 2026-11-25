@@ -85,9 +85,8 @@ public struct Fitter {
         Memory.cacheLimit = Fitter.bufferCacheLimit
         // LIVE's rates and reach are for ~256 px pictures; scale them with ours.
         let scale = Float(max(width, height)) / 256
-        var lossConfig = loss
+        var lossConfig = settings.withFolds(loss)
         lossConfig.boundaryReach = loss.boundaryReach * scale
-        if !settings.avoidFolds { lossConfig.foldWeight = 0 }
         let pointRate = 1.0 * scale
         let colorRate: Float = 0.01
 
@@ -274,11 +273,27 @@ public struct Fitter {
                 if isCancelled() { return levels }
                 updateCrops()
                 let (_, gradients) = onOneStream { lossAndGradient(parameters) }
+                let previousPoints = parameters[0]
                 parameters = adam.step(parameters: parameters, gradients: gradients)
                 for index in colorParameters {
                     parameters[index] = clip(parameters[index], min: 0, max: 1)
                 }
                 eval(parameters)
+                if settings.forbidsCrossings {
+                    // No outline may cross itself: a shape whose step did goes back, and
+                    // forgets its momentum so that it does not make the same move again.
+                    let checked = undoingCrossings(parameters[0], previous: previousPoints)
+                    if !checked.undone.isEmpty {
+                        var keep = [Float](repeating: 1, count: movable.count)
+                        for index in checked.undone { keep[index] = 0 }
+                        parameters[0] = checked.points
+                        adam.forget(
+                            parameter: 0,
+                            keeping: broadcast(
+                                MLXArray(keep, [movable.count, 1, 1]), to: checked.points.shape))
+                        eval(parameters[0])
+                    }
+                }
                 if step % Fitter.progressInterval == 0 && step < settings.stepsPerStage {
                     progress(
                         FitProgress(

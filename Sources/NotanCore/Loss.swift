@@ -17,13 +17,13 @@ public struct LossConfig: Sendable {
     public var widthWeight: Float = 0.1
     /// Weight of the penalty on sharp corners, applied only with a minimum width.
     public var cornerWeight: Float = 0.05
-    /// Weight of the penalty on shapes that fold over themselves; 0 allows folds.
-    /// Kept small on purpose: a fold only ever buys a sliver of fit, so a light touch
-    /// removes them all, while a heavy one also flattens long curved shapes (at 0.1 the
-    /// error at 128 shapes rose by half; at 0.001 it is unchanged).
-    public var foldWeight: Float = 0.001
+    /// Weight of the penalty on shapes that fold over themselves; 0 allows folds. The
+    /// penalty is each shape's fold beyond the tolerance times its share of the picture,
+    /// so one weight means the same for shapes of every size and at every working size.
+    /// Set from `FitSettings.foldStrength` by the fitter; see there for what it buys.
+    public var foldWeight: Float = 1
     /// How much of a shape may sweep backward round its centre before the fold penalty
-    /// applies. Long curved shapes sweep back a little without crossing themselves.
+    /// applies. Set from `FitSettings.foldTolerance` by the fitter.
     public var foldTolerance: Float = 0
     /// Weight of the penalty that keeps a tile from shrinking away, where tiles are fitted
     /// with all their corners free.
@@ -133,8 +133,12 @@ public func fitLoss(
         weighted + config.floorWeight * floor
         + config.xingWeight * xingLoss(points: points)
     if config.foldWeight > 0 {
+        // The picture is what is scored: the masked pixels, or all of them.
+        let area = mask?.sum() ?? MLXArray(Float(image.dim(0) * image.dim(1)))
         loss =
-            loss + config.foldWeight * foldPenalty(points: points, tolerance: config.foldTolerance)
+            loss
+            + config.foldWeight
+            * foldPenalty(points: points, tolerance: config.foldTolerance, pictureArea: area)
     }
     if let minWidths {
         loss =

@@ -97,6 +97,31 @@ public final class FitModel {
     /// Minimum shape width at the finest level, in pixels at 256 px; 0 is off.
     public static let minWidthChoices: [Float] = [0, 2, 4, 6, 8]
 
+    /// The stops of the fold strength slider, each about three times the one before.
+    /// Below the first, folds are barely held back; at the last, no outline crosses
+    /// itself, at a clear cost in fit.
+    public static let foldStrengthChoices: [Float] = [0.3, 1, 3, 10, 30, 100]
+
+    /// The stop nearest a strength, by ratio.
+    public static func foldStrengthIndex(_ strength: Float) -> Int {
+        let target = log(max(strength, 1e-6))
+        return foldStrengthChoices.indices.min {
+            abs(log(foldStrengthChoices[$0]) - target) < abs(log(foldStrengthChoices[$1]) - target)
+        } ?? foldStrengthChoices.count - 1
+    }
+
+    public static func foldStrengthLabel(_ strength: Float) -> String {
+        strength.formatted(.number.precision(.significantDigits(1)))
+    }
+
+    /// What the Folds slider reads at a tolerance: the two ends by name, the rest as a
+    /// share of the most a shape can fold, which is a bow-tie.
+    public static func foldLabel(_ tolerance: Float) -> String {
+        if tolerance <= 0 { return "None" }
+        if tolerance >= FitSettings.maxFoldTolerance { return "Any" }
+        return "\(Int((tolerance / FitSettings.maxFoldTolerance * 100).rounded()))%"
+    }
+
     public var settings = FitSettings() {
         didSet {
             // A selection names a shape of one variant's picture.

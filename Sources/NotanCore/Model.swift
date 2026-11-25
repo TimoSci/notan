@@ -495,9 +495,34 @@ public struct FitSettings: Sendable {
     /// (it scales with the working size). Earlier shapes must be wider; see
     /// `minWidthSchedule`. 0 switches the check off.
     public var minWidth: Float = 0
-    /// Whether shapes are kept from folding over themselves (bow-ties, loops, lobes folded
-    /// back). See `foldRatio`.
-    public var avoidFolds = true
+    /// How far a shape may fold over itself (bow-ties, loops, lobes folded back): the
+    /// share of its outline's sweep that may run backward, from 0, no fold, to
+    /// `maxFoldTolerance`, where anything goes. See `foldRatio`.
+    public var foldTolerance: Float = 0
+    /// The fold ratio of a bow-tie, the most a shape can have. At this tolerance folds are
+    /// not checked at all.
+    public static let maxFoldTolerance: Float = 0.5
+    /// Whether folding is limited at all. Off, shapes may fold and cross as they like,
+    /// whatever the tolerance and strength, and the fit does not spend time checking.
+    public var limitsFolds = true
+    public var allowsAnyFold: Bool { !limitsFolds || foldTolerance >= FitSettings.maxFoldTolerance }
+    /// With no fold allowed at all, outlines are also kept from crossing themselves
+    /// outright: a step that makes one cross is undone. See `undoingCrossings`.
+    public var forbidsCrossings: Bool { limitsFolds && foldTolerance <= 0 }
+    /// How strongly folding beyond the tolerance is held back: the weight of the fold
+    /// penalty. The penalty also discourages shapes that curl round something without
+    /// crossing, so a high weight costs fit. With crossings forbidden it has little left
+    /// to do, and 1 gave the best fit on the test photo; with a tolerance it is what
+    /// holds folds to it. See `LossConfig.foldWeight`.
+    public var foldStrength: Float = 1
+
+    /// `loss` with these settings' fold tolerance and strength in place.
+    public func withFolds(_ loss: LossConfig) -> LossConfig {
+        var loss = loss
+        loss.foldTolerance = foldTolerance
+        loss.foldWeight = allowsAnyFold ? 0 : foldStrength
+        return loss
+    }
     /// Whether each shape is filled with a linear gradient instead of one flat colour.
     public var gradients = false
     /// What the picture is built from: curved shapes laid over one another, or tiles.
@@ -507,9 +532,9 @@ public struct FitSettings: Sendable {
 
     public init(
         totalShapes: Int = 128, workingSize: Int = 256, stepsPerStage: Int = 150,
-        mode: LevelMode = .refit, minWidth: Float = 0, avoidFolds: Bool = true
+        mode: LevelMode = .refit, minWidth: Float = 0, foldTolerance: Float = 0
     ) {
-        self.avoidFolds = avoidFolds
+        self.foldTolerance = foldTolerance
         self.totalShapes = totalShapes
         self.workingSize = workingSize
         self.stepsPerStage = stepsPerStage

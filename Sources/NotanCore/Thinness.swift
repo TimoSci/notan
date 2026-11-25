@@ -110,9 +110,75 @@ public func foldRatio(of shape: Shape) -> Float {
     return sweeps.reduce(0) { $0 + max(-direction * $1, 0) } / total
 }
 
-/// Sum over shapes of their fold ratio, counting only what exceeds `tolerance`.
+/// How many times a shape's outline cuts across itself, on the outline sampled at 16
+/// points a segment. Unlike the fold ratio this counts every crossing alike, however
+/// little area it involves: a thin tail whose two sides swap over crosses itself while
+/// hardly counting as folded. For reporting; the fit does not use it.
+public func selfCrossings(of shape: Shape) -> Int {
+    let polygon = samplePolygon(shape.points, samplesPerSegment: 16)
+        .filter { $0.x.isFinite && $0.y.isFinite }
+    let count = polygon.count
+    guard count >= 4 else { return 0 }
+    func side(_ p: SIMD2<Float>, _ q: SIMD2<Float>, _ r: SIMD2<Float>) -> Float {
+        (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x)
+    }
+    var crossings = 0
+    for i in 0..<count {
+        let a = polygon[i]
+        let b = polygon[(i + 1) % count]
+        for j in (i + 2)..<max(count, i + 2) where !(i == 0 && j == count - 1) {
+            let c = polygon[j]
+            let d = polygon[(j + 1) % count]
+            if side(a, b, c) * side(a, b, d) < 0, side(c, d, a) * side(c, d, b) < 0 {
+                crossings += 1
+            }
+        }
+    }
+    return crossings
+}
+
+/// `points` [P, 12, 2] after a step from `previous`, with every shape whose outline the
+/// step made cross itself (more often than it already did) put back where it was.
+/// `undone` lists those shapes. A penalty cannot keep outlines from crossing without
+/// also holding back shapes that merely curl, because a thin tail whose sides swap over
+/// hardly counts as folded; undoing the step that crosses is exact and costs little fit.
+public func undoingCrossings(
+    _ points: MLXArray, previous: MLXArray
+) -> (points: MLXArray, undone: [Int]) {
+    let count = points.dim(0)
+    guard count > 0 else { return (points, []) }
+    let after = points.asArray(Float.self)
+    let before = previous.asArray(Float.self)
+    func crossings(_ flat: [Float], _ index: Int) -> Int {
+        let start = index * Shape.pointCount * 2
+        return selfCrossings(
+            of: Shape(
+                points: (0..<Shape.pointCount).map {
+                    SIMD2(flat[start + $0 * 2], flat[start + $0 * 2 + 1])
+                }, color: RGB(r: 0, g: 0, b: 0)))
+    }
+    let undone = (0..<count).filter { index in
+        let now = crossings(after, index)
+        return now > 0 && now > crossings(before, index)
+    }
+    guard !undone.isEmpty else { return (points, []) }
+    var keep = [Float](repeating: 1, count: count)
+    for index in undone { keep[index] = 0 }
+    let keeping = MLXArray(keep, [count, 1, 1])
+    return (keeping * points + (1 - keeping) * previous, undone)
+}
+
+/// Sum over shapes of their fold ratio, counting only what exceeds `tolerance`, each
+/// weighted by the shape's share of the picture: the area its outline sweeps, forward and
+/// backward, over `pictureArea`. The error a fold can save is in proportion to that share,
+/// so the weighting makes one penalty weight mean the same for shapes of every size and
+/// for every working size. The share is a weight only: shrinking a shape is not rewarded.
 /// points [P, 12, 2].
-public func foldPenalty(points: MLXArray, tolerance: Float = 0) -> MLXArray {
+public func foldPenalty(points: MLXArray, tolerance: Float = 0, pictureArea: Float) -> MLXArray {
+    foldPenalty(points: points, tolerance: tolerance, pictureArea: MLXArray(pictureArea))
+}
+
+public func foldPenalty(points: MLXArray, tolerance: Float = 0, pictureArea: MLXArray) -> MLXArray {
     guard points.dim(0) > 0 else { return MLXArray(Float(0)) }
     let (start, end) = polygonEnds()
     let a = matmul(start, points)  // [P, E, 2]
@@ -125,7 +191,8 @@ public func foldPenalty(points: MLXArray, tolerance: Float = 0) -> MLXArray {
         which(sweep.sum(axis: -1, keepDims: true) .>= 0, MLXArray(Float(1)), MLXArray(Float(-1))))
     let backward = maximum(-direction * sweep, 0).sum(axis: -1)
     let total = sqrt(sweep * sweep + 1e-8).sum(axis: -1)
-    return maximum(backward / (total + 1e-6) - tolerance, 0).sum()
+    let share = stopGradient(0.5 * total / (pictureArea + 1e-6))
+    return (share * maximum(backward / (total + 1e-6) - tolerance, 0)).sum()
 }
 
 /// The minimum width for the shapes added at each stage. It shrinks as shapes accumulate,

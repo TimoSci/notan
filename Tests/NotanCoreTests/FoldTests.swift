@@ -78,32 +78,161 @@ final class FoldTests: XCTestCase {
         XCTAssertEqual(foldRatio(of: collapsed), 0, accuracy: 1e-3)
     }
 
+    // MARK: Counting real crossings
+
+    func testCrossingsAreCountedWhereTheOutlineCutsItself() {
+        XCTAssertEqual(selfCrossings(of: circle), 0)
+        XCTAssertEqual(selfCrossings(of: rectangle(x: 5, y: 5, width: 30, height: 12)), 0)
+        // (Skewed, so that the crossing does not fall exactly on a sampled point.)
+        let skewed = quad([SIMD2(10, 10), SIMD2(30, 10), SIMD2(10, 30), SIMD2(37, 26)])
+        XCTAssertEqual(selfCrossings(of: skewed), 1)
+        XCTAssertGreaterThan(selfCrossings(of: looped()), 0)
+    }
+
+    func testAThinTwistedTailCrossesItselfThoughItHardlyCountsAsFolded() {
+        // A square body with a long tail one pixel wide whose two sides swap over half
+        // way along. The tail sweeps almost no area, so the fold ratio barely sees it.
+        let shape = Shape(
+            points: [
+                SIMD2(10, 10), SIMD2(20, 10), SIMD2(30, 10),
+                SIMD2(30, 19.5), SIMD2(45, 20.5), SIMD2(60, 20.5),
+                SIMD2(60, 19.5), SIMD2(45, 19.5), SIMD2(30, 20.5),
+                SIMD2(30, 30), SIMD2(20, 30), SIMD2(10, 30),
+            ], color: .white)
+        XCTAssertGreaterThan(selfCrossings(of: shape), 0)
+        XCTAssertLessThan(foldRatio(of: shape), 0.05)
+    }
+
+    // MARK: Undoing steps that cross
+
+    func testAStepThatMakesAShapeCrossItselfIsUndoneForThatShapeOnly() {
+        let skewed = quad([SIMD2(10, 10), SIMD2(30, 10), SIMD2(10, 30), SIMD2(37, 26)])
+        let moved = Shape.circle(center: SIMD2(31, 30), radius: 10, color: .white)
+        let before = pointsArray([circle, circle])
+        let after = pointsArray([skewed, moved])
+        let undone = undoingCrossings(after, previous: before)
+        XCTAssertEqual(undone.points[0].asArray(Float.self), before[0].asArray(Float.self))
+        XCTAssertEqual(undone.points[1].asArray(Float.self), after[1].asArray(Float.self))
+        XCTAssertEqual(undone.undone, [0])
+    }
+
+    func testAStepWithoutCrossingsIsLeftAlone() {
+        let before = pointsArray([circle])
+        let after = pointsArray([Shape.circle(center: SIMD2(31, 30), radius: 10, color: .white)])
+        let undone = undoingCrossings(after, previous: before)
+        XCTAssertEqual(undone.points.asArray(Float.self), after.asArray(Float.self))
+        XCTAssertTrue(undone.undone.isEmpty)
+    }
+
+    func testAShapeThatAlreadyCrossedMayStillMove() {
+        // Only new crossings are undone: a shape that came in crossed is not frozen.
+        let skewed = quad([SIMD2(10, 10), SIMD2(30, 10), SIMD2(10, 30), SIMD2(37, 26)])
+        let shifted = Shape(points: skewed.points.map { $0 + SIMD2(1, 0) }, color: .white)
+        let undone = undoingCrossings(pointsArray([shifted]), previous: pointsArray([skewed]))
+        XCTAssertTrue(undone.undone.isEmpty)
+    }
+
+    func testOnlyNoFoldAtAllForbidsCrossings() {
+        var settings = FitSettings()
+        XCTAssertTrue(settings.forbidsCrossings)
+        settings.foldTolerance = 0.05
+        XCTAssertFalse(settings.forbidsCrossings)
+    }
+
+    func testWithFoldChecksOffNothingIsCheckedWhateverTheSliders() {
+        var settings = FitSettings()
+        XCTAssertTrue(settings.limitsFolds)
+        settings.limitsFolds = false
+        XCTAssertFalse(settings.forbidsCrossings)
+        XCTAssertTrue(settings.allowsAnyFold)
+        XCTAssertEqual(settings.withFolds(LossConfig()).foldWeight, 0)
+        // The sliders keep their values for when it is switched on again.
+        XCTAssertEqual(settings.foldTolerance, 0)
+        XCTAssertEqual(settings.foldStrength, 1)
+    }
+
+    /// A busy picture: blocks of unrelated colours, which shapes twist themselves to reach.
+    func blocks() -> TargetImage {
+        makeTarget(width: 64, height: 64) { x, y in
+            let cell = Int(x / 8) * 7 + Int(y / 8) * 13
+            let value = Float((cell * 37) % 11) / 10
+            return RGB(r: value, g: Float((cell * 17) % 7) / 6, b: 1 - value)
+        }
+    }
+
+    func crossingShapes(_ mode: LevelMode, tolerance: Float) -> Int {
+        var settings = FitSettings(
+            totalShapes: 16, workingSize: 64, stepsPerStage: 60, mode: mode, foldTolerance: tolerance)
+        settings.foldStrength = 1
+        let levels = Fitter(target: blocks(), settings: settings)
+            .run(progress: { _ in }, isCancelled: { false })
+        return levels.map { $0.picture.shapes.filter { selfCrossings(of: $0) > 0 }.count }.max()!
+    }
+
+    func testWithFoldsAtNoneNoOutlineCrossesItselfAtAnyLevel() {
+        XCTAssertEqual(crossingShapes(.refit, tolerance: 0), 0)
+        XCTAssertEqual(crossingShapes(.prefix, tolerance: 0), 0)
+        // The picture is one that does make shapes cross when they may.
+        XCTAssertGreaterThan(crossingShapes(.refit, tolerance: FitSettings.maxFoldTolerance), 0)
+    }
+
     // MARK: The penalty
 
-    func testPenaltyMatchesRatioAndAddsUpOverShapes() {
-        let one = foldPenalty(points: pointsArray([bowTie()])).item(Float.self)
-        XCTAssertEqual(one, foldRatio(of: bowTie()), accuracy: 1e-3)
-        let mixed = foldPenalty(points: pointsArray([bowTie(), circle, bowTie()])).item(Float.self)
+    func testPenaltyIsTheFoldRatioTimesTheShapesShareOfThePicture() {
+        // The bow-tie's two triangles cover 200 px² of a 1000 px² picture.
+        let one = foldPenalty(points: pointsArray([bowTie()]), pictureArea: 1000).item(Float.self)
+        XCTAssertEqual(one, foldRatio(of: bowTie()) * 0.2, accuracy: 2e-3)
+        let mixed = foldPenalty(points: pointsArray([bowTie(), circle, bowTie()]), pictureArea: 1000)
+            .item(Float.self)
         XCTAssertEqual(mixed, 2 * one, accuracy: 1e-3)
-        XCTAssertEqual(foldPenalty(points: pointsArray([])).item(Float.self), 0)
+        XCTAssertEqual(foldPenalty(points: pointsArray([]), pictureArea: 1000).item(Float.self), 0)
+    }
+
+    func testPenaltyOfTheSameFoldGrowsWithTheShapesSize() {
+        let small = bowTie()
+        let big = Shape(points: small.points.map { $0 * 3 }, color: .white)
+        let a = foldPenalty(points: pointsArray([small]), pictureArea: 10000).item(Float.self)
+        let b = foldPenalty(points: pointsArray([big]), pictureArea: 10000).item(Float.self)
+        XCTAssertEqual(b, 9 * a, accuracy: 1e-3)
+        // And the same shape in a picture four times the area counts a quarter.
+        let c = foldPenalty(points: pointsArray([small]), pictureArea: 40000).item(Float.self)
+        XCTAssertEqual(c, a / 4, accuracy: 1e-4)
+    }
+
+    func testPenaltyCountsOnlyTheFoldOverTheTolerance() {
+        let ratio = foldRatio(of: bowTie())
+        let within = foldPenalty(points: pointsArray([bowTie()]), tolerance: ratio + 0.01, pictureArea: 1000)
+        XCTAssertEqual(within.item(Float.self), 0)
+        let over = foldPenalty(points: pointsArray([bowTie()]), tolerance: ratio - 0.1, pictureArea: 1000)
+        XCTAssertEqual(over.item(Float.self), 0.1 * 0.2, accuracy: 2e-3)
+    }
+
+    func testPenaltyDoesNotRewardShrinkingTheShape() {
+        // The share of the picture is a weight, not something to optimise: scaling a
+        // folded shape about its centre leaves its fold as it is, so no gradient that way.
+        let points = pointsArray([bowTie()])
+        let g = grad { (p: MLXArray) in foldPenalty(points: p, pictureArea: 1000) }(points)
+        let centre = points.mean(axis: 1, keepDims: true)
+        let radial = (g * (points - centre)).sum().item(Float.self)
+        XCTAssertEqual(radial, 0, accuracy: 1e-3)
     }
 
     func testPenaltyGradientUnfoldsTheShape() {
         var points = pointsArray([looped()])
-        let start = foldPenalty(points: points).item(Float.self)
-        let gradient = grad { (p: MLXArray) in foldPenalty(points: p) }
+        let start = foldPenalty(points: points, pictureArea: 100).item(Float.self)
+        let gradient = grad { (p: MLXArray) in foldPenalty(points: p, pictureArea: 100) }
         for _ in 0..<40 {
             let g = gradient(points)
             XCTAssertTrue(g.asArray(Float.self).allSatisfy { $0.isFinite })
             points = points - 20 * g
             eval(points)
         }
-        XCTAssertLessThan(foldPenalty(points: points).item(Float.self), start * 0.5)
+        XCTAssertLessThan(foldPenalty(points: points, pictureArea: 100).item(Float.self), start * 0.5)
     }
 
     func testPenaltyOfCollapsedShapeHasFiniteGradient() {
         let collapsed = Shape(points: Array(repeating: SIMD2(5, 5), count: 12), color: .white)
-        let g = grad { (p: MLXArray) in foldPenalty(points: p) }(pointsArray([collapsed]))
+        let g = grad { (p: MLXArray) in foldPenalty(points: p, pictureArea: 1000) }(pointsArray([collapsed]))
         XCTAssertTrue(g.asArray(Float.self).allSatisfy { $0.isFinite })
     }
 
@@ -119,13 +248,37 @@ final class FoldTests: XCTestCase {
         off.foldWeight = 0
         var on = LossConfig()
         on.foldWeight = 0.2
+        // The picture here is 8 by 8.
         XCTAssertEqual(
-            loss(on) - loss(off), 0.2 * foldPenalty(points: points).item(Float.self), accuracy: 1e-5)
+            loss(on) - loss(off),
+            0.2 * foldPenalty(points: points, pictureArea: 64).item(Float.self), accuracy: 1e-4)
         XCTAssertGreaterThan(LossConfig().foldWeight, 0)
     }
 
-    func testAvoidFoldsIsOnByDefault() {
-        XCTAssertTrue(FitSettings().avoidFolds)
+    func testNoFoldIsAllowedByDefault() {
+        XCTAssertEqual(FitSettings().foldTolerance, 0)
+        XCTAssertFalse(FitSettings().allowsAnyFold)
+    }
+
+    func testFoldSettingsReachTheLoss() {
+        var settings = FitSettings()
+        XCTAssertEqual(settings.foldStrength, 1)
+        settings.foldTolerance = 0.2
+        settings.foldStrength = 0.03
+        let config = settings.withFolds(LossConfig())
+        XCTAssertEqual(config.foldTolerance, 0.2)
+        XCTAssertEqual(config.foldWeight, 0.03)
+        // Any fold allowed: no penalty at all, whatever the strength.
+        settings.foldTolerance = FitSettings.maxFoldTolerance
+        XCTAssertEqual(settings.withFolds(LossConfig()).foldWeight, 0)
+    }
+
+    func testTheTopOfTheFoldRangeAllowsAnyFold() {
+        var settings = FitSettings()
+        settings.foldTolerance = FitSettings.maxFoldTolerance
+        XCTAssertTrue(settings.allowsAnyFold)
+        settings.foldTolerance = FitSettings.maxFoldTolerance - 0.05
+        XCTAssertFalse(settings.allowsAnyFold)
     }
 
     // MARK: Fill rule

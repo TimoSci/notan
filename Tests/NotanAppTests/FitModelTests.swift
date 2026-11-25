@@ -1621,4 +1621,26 @@ final class FitModelTests: XCTestCase {
         model.cancel()
         await waitFor("cancelled") { model.status == .cancelled }
     }
+
+    func testFoldLabelNamesTheEndsAndGivesTheRestAsAShareOfABowTie() {
+        XCTAssertEqual(FitModel.foldLabel(0), "None")
+        XCTAssertEqual(FitModel.foldLabel(FitSettings.maxFoldTolerance), "Any")
+        XCTAssertEqual(FitModel.foldLabel(0.05), "10%")
+        XCTAssertEqual(FitModel.foldLabel(0.25), "50%")
+    }
+
+    func testFoldStrengthChoicesIncludeTheDefaultAndRiseInEvenRatios() {
+        let choices = FitModel.foldStrengthChoices
+        XCTAssertTrue(choices.contains(FitSettings().foldStrength))
+        XCTAssertEqual(choices, choices.sorted())
+        XCTAssertEqual(choices.first, 0.3)
+        XCTAssertEqual(choices.last, 100)
+        XCTAssertEqual(FitModel.foldStrengthIndex(3), choices.firstIndex(of: 3))
+        // A value between two stops, as from the command line, goes to the nearer by ratio.
+        XCTAssertEqual(FitModel.foldStrengthIndex(2), choices.firstIndex(of: 3))
+        XCTAssertEqual(FitModel.foldStrengthIndex(5000), choices.count - 1)
+        XCTAssertEqual(FitModel.foldStrengthIndex(0.001), 0)
+        XCTAssertEqual(FitModel.foldStrengthLabel(0.3), "0.3")
+        XCTAssertEqual(FitModel.foldStrengthLabel(100), "100")
+    }
 }

@@ -33,7 +33,7 @@ Everything below is the designer's call.
 ## Non-goals (this plan)
 
 - The depth slider in tile mode.
-- Gradient fills and the "Avoid folds" option in tile mode.
+- Gradient fills and the "Folds" setting in tile mode.
 - Bent cuts. A cut is one straight segment.
 - A compact byte format for tiles. The byte figure is an estimate.
 
