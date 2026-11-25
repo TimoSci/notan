@@ -160,6 +160,18 @@ public struct ContentView: View {
                     .help(
                         "Strict tree: every tile is cut once more at each level. Worst first: the tiles that gain most are cut first."
                     )
+                    InfoButton(
+                        about: "Cuts",
+                        entries: [
+                            (
+                                "Strict tree",
+                                "At each stage every tile is cut in two, so the number of tiles doubles from level to level: 1, 2, 4, 8 and so on. Every part of the picture is divided equally often, whether it needs it or not."
+                            ),
+                            (
+                                "Worst first",
+                                "At each stage only the tiles that a cut improves most are cut. Detailed parts of the picture get many small tiles and plain parts keep a few large ones. This usually gives a better picture for the same number of tiles."
+                            ),
+                        ])
                 }
                 Picker("Levels", selection: $model.settings.mode) {
                     Text("Re-fit").tag(LevelMode.refit)
@@ -173,6 +185,29 @@ public struct ContentView: View {
                         : "Re-fit: every level is re-optimised as a whole. Prefix: each level is exactly the first shapes of the next."
                 )
                 .disabled(model.isRefining)
+                InfoButton(
+                    about: "Levels",
+                    entries: model.isTiling
+                        ? [
+                            (
+                                "Re-fit",
+                                "At every stage all corners of all tiles keep moving. Each level is the best tiling found with that many tiles, but a tile has a different outline on every level."
+                            ),
+                            (
+                                "Prefix",
+                                "A tile's outline is fixed once it has been cut. Each level's tiles are made up exactly of the next level's, so the levels nest. The fit is somewhat worse at the same number of tiles."
+                            ),
+                        ]
+                        : [
+                            (
+                                "Re-fit",
+                                "At every stage all shapes are adjusted again, the earlier ones too. Each level is the best picture found with that many shapes, but a shape differs from level to level."
+                            ),
+                            (
+                                "Prefix",
+                                "A shape is fixed once its stage ends. Each level is exactly the first shapes of the next, so one list of shapes holds every level. The fit is somewhat worse at the same number of shapes."
+                            ),
+                        ])
                 Divider().frame(height: 16)
                 Text(model.selectionLabel)
                     .foregroundStyle(model.selected.isEmpty ? .secondary : .primary)
@@ -396,6 +431,38 @@ public struct ContentView: View {
             try model.exportSVG(to: url)
         } catch {
             model.errorMessage = error.localizedDescription
+        }
+    }
+}
+
+/// A small "i" button that opens a popover explaining each choice of the control next
+/// to it.
+private struct InfoButton: View {
+    let about: String
+    let entries: [(name: String, text: String)]
+    @State private var showing = false
+
+    var body: some View {
+        Button {
+            showing.toggle()
+        } label: {
+            Image(systemName: "info.circle")
+        }
+        .buttonStyle(.borderless)
+        .padding(.leading, -10)
+        .help("What the choices for \(about) mean")
+        .accessibilityLabel("About \(about)")
+        .popover(isPresented: $showing, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(entries, id: \.name) { entry in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(entry.name).font(.headline)
+                        Text(entry.text).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .padding(14)
+            .frame(width: 320, alignment: .leading)
         }
     }
 }
