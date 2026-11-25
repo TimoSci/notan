@@ -55,6 +55,33 @@
             await pause(1)
             snapshot("1-empty")
 
+            // With NOTAN_SMOKE_GUIDE set, only the user guide is opened, from the Help menu.
+            if environment["NOTAN_SMOKE_GUIDE"] != nil {
+                let menus = NSApp.mainMenu?.items ?? []
+                note("menus: \(menus.map(\.title))")
+                let help = menus.first { $0.title == "Help" }?.submenu
+                note("help menu: \(help?.items.map(\.title) ?? [])")
+                if let help, let index = help.items.firstIndex(where: { $0.title == "Notan User Guide" }) {
+                    help.performActionForItem(at: index)
+                }
+                await pause(1)
+                let guide = NSApp.windows.first { $0.title == "Notan User Guide" && $0.isVisible }
+                note("guide window: \(guide.map { "\($0.frame.size)" } ?? "none")")
+                // The snapshot has no window background, so light text would not show.
+                guide?.appearance = NSAppearance(named: .aqua)
+                await pause(0.5)
+                if let view = guide?.contentView,
+                    let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)
+                {
+                    view.cacheDisplay(in: view.bounds, to: bitmap)
+                    try? bitmap.representation(using: .png, properties: [:])?
+                        .write(to: folder.appendingPathComponent("guide.png"))
+                }
+                note("finished")
+                NSApp.terminate(nil)
+                return
+            }
+
             model.open(URL(fileURLWithPath: photo))
             await pause(0.5)
             snapshot("2-opened")

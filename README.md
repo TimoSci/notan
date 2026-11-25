@@ -84,6 +84,8 @@ open ../.build/app/Build/Products/Release/Notan.app
    switches its lock on or off.
 7. **Export SVG…** writes the level shown.
 
+*Help > Notan User Guide* (⌘?) opens a guide that explains every control in detail.
+
 ## Command-line tool
 
 The same fitting is available without the window, for checking and timing:
